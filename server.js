@@ -104,7 +104,7 @@ async function fetchImages(query, config, limit, headers) {
 
       // Fallback 3: Parsing string dari data-dim atau elemen anak .imgpt
       if (!imageWidth || !imageHeight) {
-        const dimAttr = $(el).attr('data-dim') \vert{}\vert{}$(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
+        const dimAttr = $(el).attr('data-dim') || $(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
         if (dimAttr) {
           const match = dimAttr.match(/(\d+)\s*[\|x×:]\s*(\d+)/i);
           if (match) {
