@@ -30,7 +30,6 @@ function decodeBingUrl(bingUrl) {
 
 // Helper: Penentuan Bahasa & Wilayah Dinamis
 function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
-  // 1. Jika dikirim eksplisit via query param, utamakan param tersebut
   if (reqQuery.hl || reqQuery.gl) {
     const hl = (reqQuery.hl || 'en').toLowerCase();
     const gl = (reqQuery.gl || (hl === 'id' ? 'id' : 'us')).toLowerCase();
@@ -40,12 +39,10 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
   const query = (reqQuery.q || '').trim();
   const words = query.split(/\s+/);
 
-  // 2. Kueri 1 kata netral (misal: "Minecraft", "Indonesia") di-fallback ke Global (en-US)
   if (words.length === 1) {
     return { hl: 'en', gl: 'us', mkt: 'en-US' };
   }
 
-  // 3. Hanya set ke ID jika terdeteksi kuat Bahasa Indonesia pada kueri multi-kata
   const detected = lngDetector.detect(query, 1);
   const detectedLang = detected.length > 0 ? detected[0][0].toLowerCase() : '';
 
@@ -53,7 +50,6 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
     return { hl: 'id', gl: 'id', mkt: 'id-ID' };
   }
 
-  // Fallback default jika header mengandung ID dan kueri multi-kata
   if (acceptLanguageHeader && acceptLanguageHeader.includes('id')) {
     return { hl: 'id', gl: 'id', mkt: 'id-ID' };
   }
@@ -61,7 +57,7 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
   return { hl: 'en', gl: 'us', mkt: 'en-US' };
 }
 
-// Handler Khusus Scraping Gambar dengan Ekstraksi Dimensi Multi-Source
+// Handler Khusus Scraping Gambar
 async function fetchImages(query, config, limit, headers) {
   const images = [];
   const fetchCount = Math.max(limit, 20);
@@ -74,21 +70,41 @@ async function fetchImages(query, config, limit, headers) {
     if (images.length >= limit) return false;
 
     try {
-      const rawMData = $(el).attr('m');
+      let rawMData = $(el).attr('m');
       if (!rawMData) return;
 
+      // Handle HTML Entities decode untuk &quot;
+      rawMData = rawMData.replace(/&quot;/g, '"');
       const mData = JSON.parse(rawMData);
+      
       const imageUrl = mData.murl;
       const targetLink = mData.purl || mData.murl;
 
       if (!imageUrl) return;
 
-      // 1. Ambil Dimensi Gambar Utama
+      // --- EKSTRAKSI DIMENSI GAMBAR UTAMA (MULTI-FALLBACK) ---
       let imageWidth = parseInt(mData.mw || mData.w, 10) || null;
       let imageHeight = parseInt(mData.mh || mData.h, 10) || null;
 
+      // Fallback 1: Cek atribut expw dan exph di tag <a> (Bing menyimpannya di sini)
       if (!imageWidth || !imageHeight) {
-        const dimAttr = $(el).attr('data-dim') || $(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
+        const expw = $(el).attr('expw');
+        const exph = $(el).attr('exph');
+        if (expw) imageWidth = parseInt(expw, 10);
+        if (exph) imageHeight = parseInt(exph, 10);
+      }
+
+      // Fallback 2: Parsing URL parameter &w=1920&h=1080 dari murl
+      if (!imageWidth || !imageHeight) {
+        const wMatch = imageUrl.match(/[?&]w=(\d+)/i);
+        const hMatch = imageUrl.match(/[?&]h=(\d+)/i);
+        if (wMatch) imageWidth = parseInt(wMatch[1], 10);
+        if (hMatch) imageHeight = parseInt(hMatch[1], 10);
+      }
+
+      // Fallback 3: Parsing string dari data-dim atau elemen anak .imgpt
+      if (!imageWidth || !imageHeight) {
+        const dimAttr = $(el).attr('data-dim') \vert{}\vert{}$(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
         if (dimAttr) {
           const match = dimAttr.match(/(\d+)\s*[\|x×:]\s*(\d+)/i);
           if (match) {
@@ -96,17 +112,6 @@ async function fetchImages(query, config, limit, headers) {
             imageHeight = parseInt(match[2], 10);
           }
         }
-      }
-
-      // 2. Ambil Dimensi Thumbnail
-      let thumbnailWidth = parseInt(mData.tw || mData.twid, 10) || null;
-      let thumbnailHeight = parseInt(mData.th || mData.thid, 10) || null;
-
-      if (mData.turl && (!thumbnailWidth || !thumbnailHeight)) {
-        const wMatch = mData.turl.match(/[?&]w=(\d+)/);
-        const hMatch = mData.turl.match(/[?&]h=(\d+)/);
-        if (wMatch) thumbnailWidth = parseInt(wMatch[1], 10);
-        if (hMatch) thumbnailHeight = parseInt(hMatch[2], 10);
       }
 
       let domain = '';
@@ -122,8 +127,6 @@ async function fetchImages(query, config, limit, headers) {
         imageWidth,
         imageHeight,
         thumbnailUrl: mData.turl || imageUrl,
-        thumbnailWidth,
-        thumbnailHeight,
         source: domain ? domain.replace(/^www\./, '') : 'unknown',
         domain: domain || 'unknown',
         link: targetLink,
