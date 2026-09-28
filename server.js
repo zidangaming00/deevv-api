@@ -1,11 +1,15 @@
 import express from 'express';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import NodeCache from 'node-cache';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Helper: Dekode URL Bing Redirect ke URL Asli
+// Inisialisasi Cache dengan TTL 24 Jam (86400 detik)
+const myCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
+
+// Helper Function: Decode URL Redirect Bing ke URL Domain Asli
 function decodeBingUrl(bingUrl) {
   if (!bingUrl) return '';
   if (bingUrl.includes('&u=a1')) {
@@ -23,16 +27,32 @@ function decodeBingUrl(bingUrl) {
   return bingUrl;
 }
 
+// Endpoint Utama API Pencarian
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
 
   if (!query) {
-    return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
+    return res.status(400).json({
+      status: 'error',
+      message: 'Parameter query "q" wajib diisi. Contoh: /api/search?q=minecraft'
+    });
   }
 
+  const cacheKey = query.toLowerCase().trim();
+
+  // 1. CEK CACHE: Jika kata kunci pernah dicari dalam 24 jam terakhir
+  const cachedData = myCache.get(cacheKey);
+  if (cachedData) {
+    return res.json({
+      ...cachedData,
+      cached: true // Penanda bahwa data disajikan dari memori cache
+    });
+  }
+
+  // 2. SCRAPING BING: Jika belum ada di cache
   try {
     const targetUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=id`;
-
+    
     const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -43,7 +63,7 @@ app.get('/api/search', async (req, res) => {
 
     const $ = cheerio.load(response.data);
 
-    // 1. Instant Answer / Knowledge Box (Jika Ada)
+    // A. Instant Answer / Knowledge Card
     let instantAnswer = null;
     const answerNode = $('.b_ans, .b_entityTP, .b_promowidget').first();
     if (answerNode.length) {
@@ -54,9 +74,21 @@ app.get('/api/search', async (req, res) => {
       }
     }
 
-    // 2. Hasil Pencarian Organik
+    // B. Related Videos
+    const videos = [];
+    $('.b_videolist .mc_vtvc, .b_vlist li, .vcard').each((_, el) => {
+      const vTitle = $(el).find('.mc_vtvc_title, .b_promtext, h8').text().trim();
+      const rawVLink = $(el).find('a').attr('href');
+      const vLink = decodeBingUrl(rawVLink);
+      
+      if (vTitle && vLink) {
+        videos.push({ title: vTitle, link: vLink });
+      }
+    });
+
+    // C. Hasil Organik + Direct Link + Favicon
     const organicResults = [];
-    $('#b_results .b_algo').each((index, element) => {
+    $('#b_results .b_algo').each((_, element) => {
       const titleEl = $(element).find('h2 a');
       const snippetEl = $(element).find('.b_caption p, .b_algoDesc, .b_lineclamp2');
 
@@ -65,7 +97,7 @@ app.get('/api/search', async (req, res) => {
       const directLink = decodeBingUrl(rawLink);
       const snippet = snippetEl.text().trim();
 
-      // Mengambil favicon menggunakan Google Favicon API berdasarkan domain asli
+      // Dapatkan Favicon menggunakan domain asli
       let favicon = null;
       if (directLink) {
         try {
@@ -85,29 +117,50 @@ app.get('/api/search', async (req, res) => {
       }
     });
 
-    // 3. Related Searches (Pencarian Terkait)
+    // D. Related Searches
     const relatedSearches = [];
-    $('.b_rs a, #b_results .b_vList li a').each((i, el) => {
+    $('.b_rs a, #b_results .b_vList li a').each((_, el) => {
       const text = $(el).text().trim();
       if (text && !relatedSearches.includes(text)) {
         relatedSearches.push(text);
       }
     });
 
-    // Response JSON Lengkap
-    res.json({
+    // Format Response JSON
+    const responseData = {
       status: 'success',
       source: 'bing',
       query,
       instant_answer: instantAnswer,
+      videos,
       total_results: organicResults.length,
       organic: organicResults,
       related_searches: relatedSearches
+    };
+
+    // 3. SIMPAN KE CACHE: Simpan respon ini selama 24 jam
+    myCache.set(cacheKey, responseData);
+
+    res.json({
+      ...responseData,
+      cached: false
     });
 
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    console.error('Scraping Error:', error.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Gagal mengambil data dari Bing.',
+      error: error.message
+    });
   }
 });
 
-app.listen(PORT, () => console.log(`Server aktif di port ${PORT}`));
+// Root Endpoint
+app.get('/', (req, res) => {
+  res.send('API Aktif! Gunakan endpoint /api/search?q=kata_kunci');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
