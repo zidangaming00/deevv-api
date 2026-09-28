@@ -1,153 +1,161 @@
 import express from 'express';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import NodeCache from 'node-cache';
-import LanguageDetect from 'languagedetect';
+import RssParser from 'rss-parser';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const lngDetector = new LanguageDetect();
-const myCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
+app.use(express.json());
 
-// Helper: Dekode Redirect URL Bing (&u=a1...)
-function decodeBingUrl(bingUrl) {
-  if (!bingUrl) return '';
-  if (bingUrl.includes('&u=a1')) {
-    try {
-      const match = bingUrl.match(/&u=a1([^&]+)/);
-      if (match && match[1]) {
-        let base64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
-        while (base64.length % 4) base64 += '=';
-        return Buffer.from(base64, 'base64').toString('utf-8');
-      }
-    } catch (e) {
-      return bingUrl;
+// Enable CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  next();
+});
+
+const rssParser = new RssParser({
+  customFields: {
+    item: [
+      ['media:content', 'mediaContent'],
+      ['media:thumbnail', 'mediaThumbnail']
+    ]
+  }
+});
+
+// Cache sederhana di memory
+const cache = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 10 menit
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML/ Laver: Chrome) Chrome/124.0.0.0 Safari/537.36';
+
+// Helper Bahasa & Wilayah
+function resolveLanguageConfig(queryParams, acceptLanguageHeader) {
+  const hl = queryParams.hl || (acceptLanguageHeader ? acceptLanguageHeader.split(',')[0].slice(0, 2) : 'id');
+  const gl = queryParams.gl || (hl === 'id' ? 'id' : 'us');
+  const mkt = `${hl}-${gl.toUpperCase()}`;
+  return { hl, gl, mkt };
+}
+
+// Helper Dekode Redirect Google News ke Direct Link Original
+function extractDirectNewsUrl(googleNewsUrl) {
+  if (!googleNewsUrl) return '';
+  try {
+    const urlObj = new URL(googleNewsUrl);
+    // Google News RSS memberikan URL bertipe /rss/articles/... atau artikel ber-param url=
+    const directParam = urlObj.searchParams.get('url');
+    if (directParam) return directParam;
+
+    // Jika URL mengandung encoded string Google News, coba ekstrak dari query jika ada
+    return googleNewsUrl;
+  } catch (err) {
+    return googleNewsUrl;
+  }
+}
+
+// Helper Ekstrak Gambar dari Deskripsi RSS
+function extractImageFromHtml(htmlSnippet) {
+  if (!htmlSnippet) return null;
+  const $ = cheerio.load(htmlSnippet);
+  const imgSrc = $('img').first().attr('src');
+  if (imgSrc) {
+    // Normalisasi URL protocol relative (//...)
+    return imgSrc.startsWith('//') ? `https:${imgSrc}` : imgSrc;
+  }
+  return null;
+}
+
+// ==========================================
+// 1. SCRAPER WEB (Google Search)
+// ==========================================
+async function fetchWebResults(query, config, limit, offset, headers) {
+  const items = [];
+  const start = offset || 0;
+  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=${config.hl}&gl=${config.gl}&start=${start}&num=${limit + 5}`;
+
+  const res = await axios.get(googleUrl, { headers, timeout: 8000 });
+  const $ = cheerio.load(res.data);
+
+  let position = start + 1;
+
+  $('div.g, div[data-hveid]').each((_, el) => {
+    if (items.length >= limit) return false;
+
+    const titleEl = $(el).find('h3').first();
+    const linkEl = $(el).find('a').first();
+    const snippetEl = $(el).find('div.VwiC3b, div[style*="-webkit-line-clamp"]').first();
+
+    const title = titleEl.text().trim();
+    const link = linkEl.attr('href');
+    const snippet = snippetEl.text().trim();
+
+    if (title && link && link.startsWith('http') && !link.includes('google.com/search')) {
+      let domain = '';
+      try {
+        domain = new URL(link).hostname.replace(/^www\./, '');
+      } catch (e) {}
+
+      items.push({
+        title,
+        link,
+        snippet,
+        domain,
+        position: position++
+      });
     }
-  }
-  return bingUrl;
+  });
+
+  return items;
 }
 
-// Helper: Penentuan Bahasa & Wilayah Dinamis
-function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
-  if (reqQuery.hl || reqQuery.gl) {
-    const hl = (reqQuery.hl || 'en').toLowerCase();
-    const gl = (reqQuery.gl || (hl === 'id' ? 'id' : 'us')).toLowerCase();
-    return { hl, gl, mkt: `${hl}-${gl.toUpperCase()}` };
-  }
-
-  const query = (reqQuery.q || '').trim();
-  const words = query.split(/\s+/);
-
-  if (words.length === 1) {
-    return { hl: 'en', gl: 'us', mkt: 'en-US' };
-  }
-
-  const detected = lngDetector.detect(query, 1);
-  const detectedLang = detected.length > 0 ? detected[0][0].toLowerCase() : '';
-
-  if (detectedLang === 'indonesian') {
-    return { hl: 'id', gl: 'id', mkt: 'id-ID' };
-  }
-
-  if (acceptLanguageHeader && acceptLanguageHeader.includes('id')) {
-    return { hl: 'id', gl: 'id', mkt: 'id-ID' };
-  }
-
-  return { hl: 'en', gl: 'us', mkt: 'en-US' };
-}
-
-// Handler Khusus Scraping Gambar (Ultra-Robust Dual/Triple Strategy)
-async function fetchImages(query, config, limit, headers) {
+// ==========================================
+// 2. SCRAPER GAMBAR (Bing Images - Offset Support)
+// ==========================================
+async function fetchImages(query, config, limit, offset, headers) {
   const images = [];
+  const firstIndex = offset > 0 ? offset + 1 : 1;
   const fetchCount = Math.max(limit, 20);
-  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=1`;
+
+  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=${firstIndex}`;
 
   const res = await axios.get(bingImgUrl, { headers, timeout: 8000 });
-  const htmlContent = res.data;
-  const $ = cheerio.load(htmlContent);
+  const $ = cheerio.load(res.data);
 
-  // --- STRATEGI 1 & 2: PARSING DOM (DESKTOP + MOBILE) ---
   $('a.iusc, a[href*="mediaurl="], a[href*="detailV2"], div.iuscp a').each((_, el) => {
     if (images.length >= limit) return false;
 
-    try {
+    const mAttr = $(el).attr('m');
+    let imageUrl = '';
+    let title = '';
+    let thumbnailUrl = '';
+    let targetLink = '';
+    let imageWidth = 0;
+    let imageHeight = 0;
+
+    if (mAttr) {
+      try {
+        const mData = JSON.parse(mAttr);
+        imageUrl = mData.murl;
+        title = mData.t || mData.desc;
+        thumbnailUrl = mData.turl;
+        targetLink = mData.purl;
+        imageWidth = mData.mw || 0;
+        imageHeight = mData.mh || 0;
+      } catch (e) {}
+    }
+
+    if (!imageUrl) {
       const href = $(el).attr('href') || '';
-      let imageUrl = '';
-      let targetLink = '';
-      let title = '';
-      let thumbnailUrl = '';
-      let imageWidth = null;
-      let imageHeight = null;
+      const match = href.match(/mediaurl=([^&]+)/i);
+      if (match) imageUrl = decodeURIComponent(match[1]);
+    }
 
-      // A. Desktop JSON Parser
-      let rawMData = $(el).attr('m');
-      if (rawMData) {
-        try {
-          rawMData = rawMData.replace(/&quot;/g, '"');
-          const mData = JSON.parse(rawMData);
-          imageUrl = mData.murl || '';
-          targetLink = mData.purl || mData.murl || '';
-          title = mData.t || '';
-          thumbnailUrl = mData.turl || '';
-          imageWidth = parseInt(mData.mw || mData.w, 10) || null;
-          imageHeight = parseInt(mData.mh || mData.h, 10) || null;
-        } catch (e) {}
-      }
-
-      // B. Mobile HTML Attribute Parser (Sesuai snippet HTML)
-      if (!imageUrl && href) {
-        const mediaUrlMatch = href.match(/mediaurl=([^&]+)/i);
-        if (mediaUrlMatch && mediaUrlMatch[1]) {
-          imageUrl = decodeURIComponent(mediaUrlMatch[1]);
-        }
-
-        const purlMatch = href.match(/purl=([^&]+)/i);
-        if (purlMatch && purlMatch[1]) {
-          targetLink = decodeURIComponent(purlMatch[1]);
-        } else {
-          targetLink = imageUrl;
-        }
-
-        const ariaLabel = $(el).attr('aria-label') || '';
-        const imgAlt = $(el).find('img').attr('alt') || '';
-        title = ariaLabel.replace(/^Image result for /i, '') || imgAlt || query;
-
-        const imgNode = $(el).find('img');
-        thumbnailUrl = imgNode.attr('src') || imgNode.attr('data-src') || '';
-
-        // Handle Base64 Thumbnail -> Convert to Bing CDN URL
-        if (thumbnailUrl.startsWith('data:') || !thumbnailUrl) {
-          const thidMatch = href.match(/thid=([^&]+)/i);
-          if (thidMatch && thidMatch[1]) {
-            thumbnailUrl = `https://ts3.mm.bing.net/th?id=${thidMatch[1]}`;
-          }
-        }
-      }
-
-      if (!imageUrl) return;
-
-      // Ekstraksi Dimensi Gambar (expw / exph)
-      if (!imageWidth || !imageHeight) {
-        const expw = $(el).attr('expw');
-        const exph = $(el).attr('exph');
-        if (expw) imageWidth = parseInt(expw, 10);
-        if (exph) imageHeight = parseInt(exph, 10);
-      }
-
-      if (!imageWidth || !imageHeight) {
-        const wMatch = href.match(/[?&](?:expw|w)=(\d+)/i) || imageUrl.match(/[?&]w=(\d+)/i);
-        const hMatch = href.match(/[?&](?:exph|h)=(\d+)/i) || imageUrl.match(/[?&]h=(\d+)/i);
-        if (wMatch) imageWidth = parseInt(wMatch[1], 10);
-        if (hMatch) imageHeight = parseInt(hMatch[1], 10);
-      }
-
-      // Cek Duplikasi
-      if (images.some(img => img.imageUrl === imageUrl)) return;
-
+    if (imageUrl && imageUrl.startsWith('http')) {
       let domain = '';
       try {
-        domain = new URL(targetLink).hostname;
+        domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, '');
       } catch (e) {}
 
       images.push({
@@ -156,175 +164,165 @@ async function fetchImages(query, config, limit, headers) {
         imageWidth,
         imageHeight,
         thumbnailUrl: thumbnailUrl || imageUrl,
-        source: domain ? domain.replace(/^www\./, '') : 'unknown',
+        source: domain || 'unknown',
         domain: domain || 'unknown',
-        link: targetLink,
+        link: targetLink || imageUrl,
         googleUrl: `https://www.google.com/imgres?imgurl=${encodeURIComponent(imageUrl)}`,
-        position: images.length + 1
+        position: offset + images.length + 1
       });
-    } catch (e) {}
-  });
-
-  // --- STRATEGI 3: REGEX FALLBACK (Jika Cheerio/DOM Selector Gagal Total) ---
-  if (images.length === 0) {
-    const mediaUrlRegex = /mediaurl=([^&"']+)/gi;
-    let match;
-    while ((match = mediaUrlRegex.exec(htmlContent)) !== null && images.length < limit) {
-      try {
-        const imageUrl = decodeURIComponent(match[1]);
-        if (imageUrl.startsWith('http') && !images.some(img => img.imageUrl === imageUrl)) {
-          let domain = '';
-          try { domain = new URL(imageUrl).hostname; } catch (e) {}
-
-          images.push({
-            title: query,
-            imageUrl,
-            imageWidth: null,
-            imageHeight: null,
-            thumbnailUrl: imageUrl,
-            source: domain ? domain.replace(/^www\./, '') : 'unknown',
-            domain: domain || 'unknown',
-            link: imageUrl,
-            googleUrl: `https://www.google.com/imgres?imgurl=${encodeURIComponent(imageUrl)}`,
-            position: images.length + 1
-          });
-        }
-      } catch (e) {}
     }
-  }
+  });
 
   return images;
 }
 
-// Main API Route
+// ==========================================
+// 3. SCRAPER BERITA (Google News RSS - Direct Link & Thumbnail)
+// ==========================================
+async function fetchNews(query, config, limit, offset) {
+  const newsItems = [];
+  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${config.hl}-${config.gl.toUpperCase()}&gl=${config.gl.toUpperCase()}&ceid=${config.gl.toUpperCase()}:${config.hl}`;
+
+  const feed = await rssParser.parseURL(rssUrl);
+  const rawItems = feed.items || [];
+
+  // Implementasi Manual Pagination untuk Feed RSS
+  const pagedItems = rawItems.slice(offset, offset + limit);
+
+  for (let i = 0; i < pagedItems.length; i++) {
+    const item = pagedItems[i];
+
+    // 1. Dapatkan Direct URL (Bukan link Google News jika memungkinkan)
+    const originalLink = extractDirectNewsUrl(item.link);
+
+    // 2. Dapatkan Thumbnail
+    let thumbnail = null;
+
+    if (item.mediaThumbnail && item.mediaThumbnail.$&& item.mediaThumbnail.$.url) {
+      thumbnail = item.mediaThumbnail.$.url;
+    } else if (item.mediaContent && item.mediaContent.$&& item.mediaContent.$.url) {
+      thumbnail = item.mediaContent.$.url;
+    } else {
+      // Fallback: Cari Tag <img> di dalam isi deskripsi HTML RSS
+      thumbnail = extractImageFromHtml(item.content || item.snippet || item.summary);
+    }
+
+    // 3. Sumber Berita / Publisher
+    let sourceName = item.source || 'Berita';
+    if (typeof sourceName === 'object' && sourceName._) {
+      sourceName = sourceName._;
+    }
+
+    let domain = '';
+    try {
+      domain = new URL(originalLink).hostname.replace(/^www\./, '');
+    } catch (e) {}
+
+    // Bersihkan Snippet HTML Text
+    const cleanSnippet = item.contentSnippet || (item.content ? cheerio.load(item.content).text() : '');
+
+    newsItems.push({
+      title: item.title ? item.title.replace(/ - [^-]+$/, '') : '', // Hapus nama publisher di akhir judul
+      link: originalLink,
+      snippet: cleanSnippet.trim(),
+      publisher: sourceName,
+      domain,
+      thumbnailUrl: thumbnail,
+      publishedAt: item.pubDate || item.isoDate || null,
+      position: offset + i + 1
+    });
+  }
+
+  return newsItems;
+}
+
+// ==========================================
+// MAIN ROUTE API (/api/search)
+// ==========================================
 app.get('/api/search', async (req, res) => {
   const startTime = Date.now();
   const query = req.query.q;
   const searchType = (req.query.type || 'search').toLowerCase();
-  
-  const defaultLimit = searchType === 'images' ? 20 : 10;
-  const limit = parseInt(req.query.num, 10) || defaultLimit;
 
   if (!query) {
     return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
   }
 
-  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
-  const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}`;
+  // Set Default Limit
+  let defaultLimit = 10;
+  if (searchType === 'images') defaultLimit = 20;
+  if (searchType === 'news') defaultLimit = 15;
 
-  const cachedData = myCache.get(cacheKey);
-  if (cachedData) {
-    return res.json({ ...cachedData, cached: true });
+  const limit = parseInt(req.query.num, 10) || defaultLimit;
+
+  // Mendukung Parameter 'start' ATAU 'page'
+  let offset = parseInt(req.query.start, 10) || 0;
+  if (!req.query.start && req.query.page) {
+    const page = parseInt(req.query.page, 10) || 1;
+    offset = (page - 1) * limit;
+  }
+
+  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}_start${offset}`;
+
+  // Cek Cache
+  if (cache.has(cacheKey)) {
+    const cachedData = cache.get(cacheKey);
+    if (Date.now() - cachedData.timestamp < CACHE_TTL) {
+      return res.json(cachedData.data);
+    }
   }
 
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-    'Cookie': 'SRCHHPGUSR=PR=1&ADLT=OFF&NRSLT=50; MUID=1234567890;'
+    'User-Agent': USER_AGENT,
+    'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`
   };
 
   try {
+    let results = [];
+
+    if (searchType === 'images') {
+      results = await fetchImages(query, config, limit, offset, headers);
+    } else if (searchType === 'news') {
+      results = await fetchNews(query, config, limit, offset);
+    } else {
+      results = await fetchWebResults(query, config, limit, offset, headers);
+    }
+
+    const searchTime = ((Date.now() - startTime) / 1000).toFixed(2);
+
     const responsePayload = {
+      status: 'success',
       searchParameters: {
         q: query,
         type: searchType,
-        engine: searchType === 'images' ? 'bing_images' : 'bing',
-        gl: config.gl,
         hl: config.hl,
-        num: limit
-      }
+        gl: config.gl,
+        num: limit,
+        start: offset,
+        page: Math.floor(offset / limit) + 1
+      },
+      searchInformation: {
+        formattedSearchTime: searchTime,
+        totalResults: results.length
+      },
+      [searchType === 'search' ? 'items' : searchType]: results
     };
 
-    // 1. MODE: IMAGES ONLY
-    if (searchType === 'images') {
-      responsePayload.images = await fetchImages(query, config, limit, headers);
-    }
+    // Simpan ke Cache
+    cache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
 
-    // 2. MODE: NEWS ONLY
-    else if (searchType === 'news') {
-      const newsRes = await axios.get(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 });
-      const $ = cheerio.load(newsRes.data);
-      const news = [];
-
-      $('.news-card, .newsitem').slice(0, limit).each((idx, el) => {
-        const titleEl = $(el).find('a.title');
-        const title = titleEl.text().trim();
-        const link = decodeBingUrl(titleEl.attr('href'));
-        const source = $(el).find('.source, .provider').text().trim();
-        const snippet = $(el).find('.snippet, .caption').text().trim();
-        const date = $(el).find('span[aria-label], .time').text().trim();
-
-        if (title && link) {
-          news.push({ position: idx + 1, title, link, snippet, source, date });
-        }
-      });
-
-      responsePayload.news = news;
-    }
-
-    // 3. MODE: SEARCH DEFAULT (Organik Only)
-    else {
-      const webRes = await axios.get(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}`, { headers, timeout: 8000 });
-      const $ = cheerio.load(webRes.data);
-
-      const organic = [];
-      let instantAnswer = null;
-      const relatedSearches = [];
-
-      const answerNode = $('.b_ans, .b_entityTP, .b_promowidget, .b_rich').first();
-      if (answerNode.length) {
-        const title = answerNode.find('h2, .b_entityTitle, .b_focusTextExtra').first().text().trim();
-        const snippet = answerNode.find('.b_caption, .b_entityDesc, .rwrl, .b_focusTextMedium').first().text().trim();
-        if (title || snippet) instantAnswer = { title, snippet };
-      }
-
-      $('#b_results .b_algo').slice(0, limit).each((_, element) => {
-        const titleEl = $(element).find('h2 a');
-        const snippetEl = $(element).find('.b_caption p, .b_algoDesc, .b_lineclamp2');
-
-        const title = titleEl.text().trim();
-        const directLink = decodeBingUrl(titleEl.attr('href'));
-        const snippet = snippetEl.text().trim();
-
-        let favicon = null;
-        if (directLink) {
-          try {
-            const domain = new URL(directLink).hostname;
-            favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-          } catch (e) {}
-        }
-
-        if (title && directLink) {
-          organic.push({
-            position: organic.length + 1,
-            title,
-            link: directLink,
-            favicon,
-            snippet: snippet || 'Deskripsi tidak tersedia.'
-          });
-        }
-      });
-
-      $('.b_rs a, #b_results .b_vList li a').each((_, el) => {
-        const text = $(el).text().trim();
-        if (text && !relatedSearches.includes(text)) relatedSearches.push(text);
-      });
-
-      if (instantAnswer) responsePayload.instantAnswer = instantAnswer;
-      responsePayload.organic = organic;
-      responsePayload.relatedSearches = relatedSearches;
-    }
-
-    responsePayload.credits = 1;
-    responsePayload.duration = `${Date.now() - startTime}ms`;
-
-    myCache.set(cacheKey, responsePayload);
-    return res.json({ ...responsePayload, cached: false });
-
+    return res.json(responsePayload);
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    console.error(`Error pada type=${searchType}:`, error.message);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Gagal mengambil data dari penyedia pencarian.',
+      error: error.message
+    });
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server API berjalan di http://localhost:${PORT}`);
+});
