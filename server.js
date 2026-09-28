@@ -185,12 +185,11 @@ async function fetchWebResults(query, config, limit, offset) {
 function buildBingImageCookies(config) {
   const region = (config.gl || 'id').toUpperCase();
   const lang = config.hl || 'id';
-  // FIX 1: Hapus &WNS=1 agar Bing TIDAK melakukan auto-correction/intent switching
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang};`;
+  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) - FIX RELEVANSI PRESI
+// 2. SCRAPER GAMBAR (Bing Images) - FIX 100% SAMA DENGAN BROWSER
 // ==========================================
 async function fetchImages(query, config, limit, offset) {
   if (bingImageBreaker.isOpen()) {
@@ -202,9 +201,8 @@ async function fetchImages(query, config, limit, offset) {
     const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
 
-    // FIX 2: Hapus scenario=ImageBasicHover & tambahkan qft=+filterui:photo-photo
-    // Parameter ini memaksa Bing melakukan tekstual matching untuk semua kata dalam query.
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC3&qft=+filterui:photo-photo&first=${firstIndex}&count=${fetchCount}`;
+    // Gunakan parameter form=HDRSC3 & scenario=ImageBasicHover persis seperti URL browser
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC3&scenario=ImageBasicHover&first=${firstIndex}&count=${fetchCount}`;
 
     const res = await axios.get(bingImgUrl, {
       headers: {
@@ -234,7 +232,7 @@ async function fetchImages(query, config, limit, offset) {
 
     const $ = cheerio.load(html);
 
-    // Ambil dari kontainer grid utama (#mmComponent_images_1) atau fallback ke seluruh body
+    // Ambil khusus dari kontainer grid gambar utama Bing (#mmComponent_images_1)
     const container = $('#mmComponent_images_1').length ? $('#mmComponent_images_1') : $('body');
 
     container.find('a.iusc, div.iuscp a').each((_, el) => {
@@ -272,36 +270,6 @@ async function fetchImages(query, config, limit, offset) {
         } catch (e) {}
       }
     });
-
-    // FIX 3: Fallback ke Regex jika Cheerio gagal mengekstrak elemen `a.iusc`
-    if (images.length === 0) {
-      const regex = /m\s*=\s*"({[\s\S]*?})"/g;
-      let match;
-      while ((match = regex.exec(html)) !== null && images.length < limit) {
-        try {
-          const unescapedStr = match[1].replace(/&quot;/g, '"');
-          const mData = JSON.parse(unescapedStr);
-          if (mData.murl && mData.murl.startsWith('http')) {
-            images.push({
-              title: mData.t || query,
-              image: mData.murl,
-              imageUrl: mData.murl,
-              thumbnail: mData.turl || mData.murl,
-              thumbnailUrl: mData.turl || mData.murl,
-              width: mData.mw || 0,
-              height: mData.mh || 0,
-              imageWidth: mData.mw || 0,
-              imageHeight: mData.mh || 0,
-              source: 'bing',
-              domain: 'bing',
-              pageUrl: mData.purl || mData.murl,
-              link: mData.purl || mData.murl,
-              position: offset + images.length + 1
-            });
-          }
-        } catch (e) {}
-      }
-    }
 
     if (images.length === 0) throw new Error('EMPTY_RESULT: Selector & regex fallback gambar sama-sama gagal.');
 
