@@ -319,6 +319,19 @@ function extractThumbnail($, el) {
   return null;
 }
 
+// ==========================================
+// 3. SCRAPER BERITA — Bing News (selector asli, terverifikasi dari
+//    struktur endpoint infinitescrollajax milik Bing sendiri)
+// ==========================================
+
+function buildBingNewsCookies(config) {
+  // Format cookie ini yang bikin Bing benar-benar mengembalikan
+  // markup 'newsitem' lengkap dengan thumbnail sesuai market/bahasa.
+  const region = config.gl.toUpperCase();
+  const lang = config.hl;
+  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}`;
+}
+
 async function fetchNewsViaBing(query, config, limit, offset) {
   if (bingNewsBreaker.isOpen()) {
     throw new Error('CIRCUIT_OPEN: Sumber berita Bing sedang di-cooldown.');
@@ -327,14 +340,17 @@ async function fetchNewsViaBing(query, config, limit, offset) {
   try {
     const newsItems = [];
     const first = offset > 0 ? offset + 1 : 1;
-    const bingNewsUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&first=${first}`;
+
+    // Endpoint AJAX asli Bing News — bukan /news/search biasa
+    const bingNewsUrl = `https://www.bing.com/news/infinitescrollajax?q=${encodeURIComponent(query)}&InfiniteScroll=1&first=${first}`;
 
     const res = await axios.get(bingNewsUrl, {
       headers: {
         'User-Agent': getRandomUserAgent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-        'Referer': 'https://www.bing.com/'
+        'Referer': 'https://www.bing.com/news',
+        'Cookie': buildBingNewsCookies(config)   // <-- kunci yang tadinya hilang
       },
       timeout: 9000
     });
@@ -345,33 +361,61 @@ async function fetchNewsViaBing(query, config, limit, offset) {
     }
 
     const $ = cheerio.load(html);
-    const cards = tryFindNewsCards($);
+
+    // Selector utama — sesuai struktur asli Bing (class mengandung "newsitem")
+    let cards = $('div[class*="newsitem"]');
+
+    // Fallback kalau Bing sedikit ubah nama class tapi struktur intinya sama
+    if (cards.length === 0) {
+      cards = $('[url][class*="news"]'); // elemen apapun yang punya atribut url + class news
+    }
 
     cards.each((_, el) => {
       if (newsItems.length >= limit) return false;
 
-      const { title, link } = extractTitleAndLink($, el);
-      if (!title || !link) return; // skip item cacat, jangan crash semua
+      const $el = $(el);
 
-      const snippet = $(el).find('.snippet').first().text().trim();
-      const publisher = $(el).find('.source a, .source').first().text().trim();
-      const thumbnail = extractThumbnail($, el);
+      // URL ada di ATRIBUT elemen, bukan di dalam <a href>
+      const link = $el.attr('url') || $el.find('a.title').first().attr('href');
+      const title = $el.find('.caption a.title, a.title').first().text().trim();
+
+      if (!title || !link || !link.startsWith('http')) return; // skip item cacat
+
+      const snippet = $el.find('.snippet').first().text().trim();
+
+      // Metadata source biasanya berisi "Nama Media · 2 jam lalu"
+      const sourceSpans = $el.find('.source span');
+      const metadataText = sourceSpans.map((i, s) => $(s).text().trim()).get().join(' · ');
+      const publisher = sourceSpans.first().text().trim();
+
+      // Thumbnail: src ada di dalam a.imagelink img, formatnya path relatif
+      let thumbnail = null;
+      const imgSrc = $el.find('a.imagelink img').first().attr('src');
+      if (imgSrc) {
+        if (imgSrc.startsWith('http')) {
+          thumbnail = imgSrc;
+        } else {
+          // gabungkan dengan domain Bing, hindari double-slash
+          thumbnail = `https://www.bing.com${imgSrc.startsWith('/') ? '' : '/'}${imgSrc}`;
+        }
+      }
 
       let domain = '';
       try { domain = new URL(link).hostname.replace(/^www\./, ''); } catch (e) {}
 
       newsItems.push({
-        title, link,
+        title,
+        link,
         snippet: snippet || 'Tidak ada deskripsi.',
         publisher: publisher || domain || 'Berita',
         domain,
         thumbnailUrl: thumbnail,
-        publishedAt: null,
+        publishedAt: metadataText || null,
         position: offset + newsItems.length + 1
       });
     });
 
-    if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Semua strategi selector berita Bing gagal, 0 item.');
+    if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Struktur newsitem tidak ditemukan, kemungkinan Bing ubah markup lagi.');
 
     bingNewsBreaker.recordSuccess();
     return newsItems;
@@ -383,7 +427,6 @@ async function fetchNewsViaBing(query, config, limit, offset) {
     throw err;
   }
 }
-
 async function fetchNewsViaGoogleRss(query, config, limit, offset) {
   if (googleNewsRssBreaker.isOpen()) {
     throw new Error('CIRCUIT_OPEN: Fallback Google News RSS sedang di-cooldown.');
