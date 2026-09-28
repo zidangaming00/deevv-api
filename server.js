@@ -64,7 +64,6 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
 // Handler Khusus Scraping Gambar dengan Ekstraksi Dimensi Multi-Source
 async function fetchImages(query, config, limit, headers) {
   const images = [];
-  // Paksa Bing mengambil buffer data lebih banyak (minimal 20-50 item)
   const fetchCount = Math.max(limit, 20);
   const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=1`;
 
@@ -84,7 +83,7 @@ async function fetchImages(query, config, limit, headers) {
 
       if (!imageUrl) return;
 
-      // 1. Ambil Dimensi Gambar Utama (Cari di mData dulu, jika null parse dari HTML data-dim / text badge)
+      // 1. Ambil Dimensi Gambar Utama
       let imageWidth = parseInt(mData.mw || mData.w, 10) || null;
       let imageHeight = parseInt(mData.mh || mData.h, 10) || null;
 
@@ -99,7 +98,7 @@ async function fetchImages(query, config, limit, headers) {
         }
       }
 
-      // 2. Ambil Dimensi Thumbnail (Cari di mData atau regex URL turl)
+      // 2. Ambil Dimensi Thumbnail
       let thumbnailWidth = parseInt(mData.tw || mData.twid, 10) || null;
       let thumbnailHeight = parseInt(mData.th || mData.thid, 10) || null;
 
@@ -143,9 +142,8 @@ async function fetchImages(query, config, limit, headers) {
 app.get('/api/search', async (req, res) => {
   const startTime = Date.now();
   const query = req.query.q;
-  const searchType = (req.query.type || 'search').toLowerCase(); // 'search', 'images', atau 'news'
+  const searchType = (req.query.type || 'search').toLowerCase();
   
-  // Set default limit: Images = 20, Lainnya = 10
   const defaultLimit = searchType === 'images' ? 20 : 10;
   const limit = parseInt(req.query.num, 10) || defaultLimit;
 
@@ -180,16 +178,12 @@ app.get('/api/search', async (req, res) => {
       }
     };
 
-    // ==========================================
     // 1. MODE: IMAGES ONLY
-    // ==========================================
     if (searchType === 'images') {
       responsePayload.images = await fetchImages(query, config, limit, headers);
     }
 
-    // ==========================================
     // 2. MODE: NEWS ONLY
-    // ==========================================
     else if (searchType === 'news') {
       const newsRes = await axios.get(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 });
       const $ = cheerio.load(newsRes.data);
@@ -211,9 +205,7 @@ app.get('/api/search', async (req, res) => {
       responsePayload.news = news;
     }
 
-    // ==========================================
     // 3. MODE: SEARCH DEFAULT (Organik Only)
-    // ==========================================
     else {
       const webRes = await axios.get(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}`, { headers, timeout: 8000 });
       const $ = cheerio.load(webRes.data);
@@ -266,7 +258,6 @@ app.get('/api/search', async (req, res) => {
       responsePayload.relatedSearches = relatedSearches;
     }
 
-    // Metrik Eksekusi API
     responsePayload.credits = 1;
     responsePayload.duration = `${Date.now() - startTime}ms`;
 
