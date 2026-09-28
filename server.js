@@ -181,7 +181,7 @@ async function fetchWebResults(query, config, limit, offset) {
   }
 }
 
-// Cookie & Header sintetis agar Bing menganggap request berasal dari browser Indonesia yang valid
+// Helper cookie khusus Bing Images
 function buildBingImageCookies(config) {
   const region = (config.gl || 'id').toUpperCase();
   const lang = config.hl || 'id';
@@ -189,7 +189,7 @@ function buildBingImageCookies(config) {
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) - FIX 100% SAMA DENGAN BROWSER
+// 2. SCRAPER GAMBAR (Bing Images) — CLEAN & NATURAL
 // ==========================================
 async function fetchImages(query, config, limit, offset) {
   if (bingImageBreaker.isOpen()) {
@@ -201,25 +201,23 @@ async function fetchImages(query, config, limit, offset) {
     const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
 
-    // Gunakan parameter form=HDRSC3 & scenario=ImageBasicHover persis seperti URL browser
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC3&scenario=ImageBasicHover&first=${firstIndex}&count=${fetchCount}`;
+    // Bersihkan spasi ganda tanpa mengubah/memaksa kutip ganda
+    const cleanQuery = query.trim().replace(/\s+/g, ' ');
+
+    // Tambahkan qft=+filterui:photo-photo agar Bing fokus pada pencocokan gambar berbasis teks query
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(cleanQuery)}&form=HDRSC3&scenario=ImageBasicHover&qft=+filterui:photo-photo&first=${firstIndex}&count=${fetchCount}`;
 
     const res = await axios.get(bingImgUrl, {
       headers: {
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
         'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
+        'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(cleanQuery)}`,
         'Cookie': buildBingImageCookies(config)
       },
       timeout: 9000
