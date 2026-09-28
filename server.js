@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const lngDetector = new LanguageDetect();
 const myCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
 
-// Helper: Dekode Redirect URL Bing
+// Helper: Dekode Redirect URL Bing (&u=a1...)
 function decodeBingUrl(bingUrl) {
   if (!bingUrl) return '';
   if (bingUrl.includes('&u=a1')) {
@@ -28,29 +28,95 @@ function decodeBingUrl(bingUrl) {
   return bingUrl;
 }
 
-// Deteksi Bahasa & Wilayah Dinamis
+// Helper: Penentuan Bahasa & Wilayah Dinamis
 function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
-  if (reqQuery.hl) {
-    const hl = reqQuery.hl.toLowerCase();
+  // 1. Jika dikirim eksplisit via query param, utamakan param tersebut
+  if (reqQuery.hl || reqQuery.gl) {
+    const hl = (reqQuery.hl || 'en').toLowerCase();
     const gl = (reqQuery.gl || (hl === 'id' ? 'id' : 'us')).toLowerCase();
     return { hl, gl, mkt: `${hl}-${gl.toUpperCase()}` };
   }
 
-  const detected = lngDetector.detect(reqQuery.q, 1);
+  const query = (reqQuery.q || '').trim();
+  const words = query.split(/\s+/);
+
+  // 2. Kueri 1 kata netral (misal: "Minecraft") di-fallback ke Global (en-US)
+  if (words.length === 1) {
+    return { hl: 'en', gl: 'us', mkt: 'en-US' };
+  }
+
+  // 3. Hanya set ke ID jika terdeteksi kuat Bahasa Indonesia pada kueri multi-kata
+  const detected = lngDetector.detect(query, 1);
   const detectedLang = detected.length > 0 ? detected[0][0].toLowerCase() : '';
 
-  if (detectedLang === 'indonesian' || (acceptLanguageHeader && acceptLanguageHeader.includes('id'))) {
+  if (detectedLang === 'indonesian') {
+    return { hl: 'id', gl: 'id', mkt: 'id-ID' };
+  }
+
+  // Fallback default jika header mengandung ID dan kueri multi-kata
+  if (acceptLanguageHeader && acceptLanguageHeader.includes('id')) {
     return { hl: 'id', gl: 'id', mkt: 'id-ID' };
   }
 
   return { hl: 'en', gl: 'us', mkt: 'en-US' };
 }
 
+// Handler Khusus Scraping Gambar dengan Ekstraksi Dimensi Lengkap
+async function fetchImages(query, config, limit, headers) {
+  const images = [];
+  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}`;
+
+  const res = await axios.get(bingImgUrl, { headers, timeout: 8000 });
+  const $ = cheerio.load(res.data);
+
+  $('a.iusc').each((_, el) => {
+    if (images.length >= limit) return false;
+
+    try {
+      const rawMData = $(el).attr('m');
+      if (!rawMData) return;
+
+      const mData = JSON.parse(rawMData);
+      const imageUrl = mData.murl;
+      const targetLink = mData.purl || mData.murl;
+
+      if (!imageUrl) return;
+
+      let domain = '';
+      try {
+        domain = new URL(targetLink).hostname;
+      } catch (e) {
+        domain = '';
+      }
+
+      images.push({
+        title: mData.t || query,
+        imageUrl,
+        imageWidth: parseInt(mData.mw, 10) || parseInt(mData.w, 10) || null,
+        imageHeight: parseInt(mData.mh, 10) || parseInt(mData.h, 10) || null,
+        thumbnailUrl: mData.turl || imageUrl,
+        thumbnailWidth: parseInt(mData.tw, 10) || null,
+        thumbnailHeight: parseInt(mData.th, 10) || null,
+        source: domain ? domain.replace(/^www\./, '') : 'unknown',
+        domain: domain || 'unknown',
+        link: targetLink,
+        googleUrl: `https://www.google.com/imgres?imgurl=${encodeURIComponent(imageUrl)}`,
+        position: images.length + 1
+      });
+    } catch (e) {
+      // Abaikan node jika gagal diparsing
+    }
+  });
+
+  return images;
+}
+
+// Main API Route
 app.get('/api/search', async (req, res) => {
   const startTime = Date.now();
   const query = req.query.q;
   const searchType = (req.query.type || 'search').toLowerCase(); // 'search', 'images', atau 'news'
-  const limit = parseInt(req.query.num) || 10;
+  const limit = parseInt(req.query.num, 10) || 10;
 
   if (!query) {
     return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
@@ -58,7 +124,7 @@ app.get('/api/search', async (req, res) => {
 
   const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
   const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}`;
-  
+
   const cachedData = myCache.get(cacheKey);
   if (cachedData) {
     return res.json({ ...cachedData, cached: true });
@@ -68,7 +134,7 @@ app.get('/api/search', async (req, res) => {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-    'Cookie': 'SRCHHPGUSR=PR=1&ADLT=OFF&NRSLT=10; MUID=1234567890;'
+    'Cookie': 'SRCHHPGUSR=PR=1&ADLT=OFF&NRSLT=50; MUID=1234567890;'
   };
 
   try {
@@ -76,7 +142,7 @@ app.get('/api/search', async (req, res) => {
       searchParameters: {
         q: query,
         type: searchType,
-        engine: searchType === 'images' ? 'google_images' : 'bing',
+        engine: searchType === 'images' ? 'bing_images' : 'bing',
         gl: config.gl,
         hl: config.hl,
         num: limit
@@ -84,70 +150,11 @@ app.get('/api/search', async (req, res) => {
     };
 
     // ==========================================
-    // 1. MODE: GOOGLE IMAGES (tbm=isch)
+    // 1. MODE: IMAGES ONLY
     // ==========================================
     if (searchType === 'images') {
-      const googleImgUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch&gl=${config.gl}&hl=${config.hl}`;
-      const imgRes = await axios.get(googleImgUrl, { headers, timeout: 8000 });
-      const $ = cheerio.load(imgRes.value ? imgRes.value.data : imgRes.data);
-      
-      const images = [];
-      
-      // Extraction JSON Script Data yang di-inject Google Images
-      const scripts = $('script').toArray();
-      for (const script of scripts) {
-        const content = $(script).html() || '';
-        if (content.includes('AF_initDataCallback') && content.includes('thumbnailUrl')) {
-          // Parsing fallback via regex visual element
-        }
-      }
-
-      // Parsing Standar DOM / Meta Bing & Google Images Fallback
-      $('table.M4A3ed, .rg_i, img.DS19ne, .islrc div.v4g3de').slice(0, limit).each((idx, el) => {
-        const imgEl = $(el).find('img');
-        const src = imgEl.attr('src') || imgEl.attr('data-src');
-        if (src && src.startsWith('http')) {
-          images.push({
-            title: $(el).find('span').text().trim() || query,
-            imageUrl: src,
-            thumbnailUrl: src,
-            source: 'Google Images',
-            domain: 'google.com',
-            link: `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`,
-            position: idx + 1
-          });
-        }
-      });
-
-      // Jika Google memblokir IP Cloud, Fallback Parsing Murni Bing Images dengan Metadata Lengkap
-      if (images.length === 0) {
-        const bingImgRes = await axios.get(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 });
-        const $b = cheerio.load(bingImgRes.data);$b('a.iusc').slice(0, limit).each((idx, el) => {
-          try {
-            const mData = JSON.parse($b(el).attr('m') || '{}');
-            if (mData.murl) {
-              let domainName = '';
-              try { domainName = new URL(mData.purl || mData.murl).hostname; } catch(e){}
-
-              images.push({
-                title: mData.t || query,
-                imageUrl: mData.murl,
-                imageWidth: mData.mw || null,
-                imageHeight: mData.mh || null,
-                thumbnailUrl: mData.turl || mData.murl,
-                source: domainName.replace('www.', ''),
-                domain: domainName,
-                link: mData.purl || mData.murl,
-                googleUrl: `https://www.google.com/imgres?imgurl=${encodeURIComponent(mData.murl)}`,
-                position: idx + 1
-              });
-            }
-          } catch (e) {}
-        });
-      }
-
-      responsePayload.images = images;
-    } 
+      responsePayload.images = await fetchImages(query, config, limit, headers);
+    }
 
     // ==========================================
     // 2. MODE: NEWS ONLY
@@ -228,7 +235,7 @@ app.get('/api/search', async (req, res) => {
       responsePayload.relatedSearches = relatedSearches;
     }
 
-    // Tambahkan Metrik Performa
+    // Metrik Eksekusi API
     responsePayload.credits = 1;
     responsePayload.duration = `${Date.now() - startTime}ms`;
 
