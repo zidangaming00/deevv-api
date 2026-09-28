@@ -8,7 +8,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Enable CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -24,9 +23,8 @@ const rssParser = new RssParser({
   }
 });
 
-// Cache sederhana di memory
 const cache = new Map();
-const CACHE_TTL = 10 * 60 * 1000; // 10 menit
+const CACHE_TTL = 10 * 60 * 1000;
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -38,7 +36,6 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// Helper Bahasa & Wilayah
 function resolveLanguageConfig(queryParams, acceptLanguageHeader) {
   const hl = queryParams.hl || (acceptLanguageHeader ? acceptLanguageHeader.split(',')[0].slice(0, 2) : 'id');
   const gl = queryParams.gl || (hl === 'id' ? 'id' : 'us');
@@ -46,19 +43,6 @@ function resolveLanguageConfig(queryParams, acceptLanguageHeader) {
   return { hl, gl, mkt };
 }
 
-// Helper Dekode Redirect Google News
-function extractDirectNewsUrl(googleNewsUrl) {
-  if (!googleNewsUrl) return '';
-  try {
-    const urlObj = new URL(googleNewsUrl);
-    const directParam = urlObj.searchParams.get('url');
-    return directParam || googleNewsUrl;
-  } catch (err) {
-    return googleNewsUrl;
-  }
-}
-
-// Helper Ekstrak Gambar dari Deskripsi RSS
 function extractImageFromHtml(htmlSnippet) {
   if (!htmlSnippet) return null;
   const $ = cheerio.load(htmlSnippet);
@@ -70,206 +54,429 @@ function extractImageFromHtml(htmlSnippet) {
 }
 
 // ==========================================
-// 1. SCRAPER WEB (Bing Search Only)
+// CIRCUIT BREAKER — mencegah sistem "keras kepala"
+// terus nyoba sumber yang lagi lumpuh
 // ==========================================
-async function fetchWebResults(query, config, limit, offset) {
-  const items = [];
-  const firstIndex = offset > 0 ? offset + 1 : 1;
-  const bingWebUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&first=${firstIndex}`;
-
-  const res = await axios.get(bingWebUrl, {
-    headers: {
-      'User-Agent': getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-      'Referer': 'https://www.bing.com/'
-    },
-    timeout: 9000
-  });
-
-  const html = res.data;
-  if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
-    throw new Error('BLOCKED_CAPTCHA: Bing mendeteksi bot/minta verifikasi Captcha.');
+class CircuitBreaker {
+  constructor(name, { failureThreshold = 3, cooldownMs = 5 * 60 * 1000 } = {}) {
+    this.name = name;
+    this.failureThreshold = failureThreshold;
+    this.cooldownMs = cooldownMs;
+    this.failureCount = 0;
+    this.openedAt = null; // kapan breaker "terbuka" (menolak request)
   }
 
-  const $ = cheerio.load(html);
-
-  // Parsing Hasil Web Bing
-  $('li.b_algo').each((_, el) => {
-    if (items.length >= limit) return false;
-
-    const titleEl = $(el).find('h2 a').first();
-    const snippetEl = $(el).find('div.b_caption p, p.b_lineclamp').first();
-
-    const title = titleEl.text().trim();
-    const link = titleEl.attr('href');
-    const snippet = snippetEl.text().trim();
-
-    if (title && link && link.startsWith('http')) {
-      let domain = '';
-      try {
-        domain = new URL(link).hostname.replace(/^www\./, '');
-      } catch (e) {}
-
-      items.push({
-        title,
-        link,
-        snippet: snippet || 'Tidak ada deskripsi.',
-        domain,
-        position: offset + items.length + 1
-      });
+  isOpen() {
+    if (this.openedAt === null) return false;
+    // Kalau sudah lewat cooldown, coba lagi (half-open)
+    if (Date.now() - this.openedAt > this.cooldownMs) {
+      this.openedAt = null;
+      this.failureCount = 0;
+      return false;
     }
-  });
+    return true;
+  }
 
-  return items;
+  recordSuccess() {
+    this.failureCount = 0;
+    this.openedAt = null;
+  }
+
+  recordFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.failureThreshold && this.openedAt === null) {
+      this.openedAt = Date.now();
+      console.error(`[CIRCUIT BREAKER] "${this.name}" DIBUKA — dianggap lumpuh selama ${this.cooldownMs / 1000}s ke depan. Gagal ${this.failureCount}x berturut-turut.`);
+    }
+  }
+
+  getStatus() {
+    return {
+      name: this.name,
+      state: this.isOpen() ? 'OPEN (lumpuh sementara)' : 'CLOSED (normal)',
+      consecutiveFailures: this.failureCount,
+      reopenAt: this.openedAt ? new Date(this.openedAt + this.cooldownMs).toISOString() : null
+    };
+  }
+}
+
+const bingWebBreaker = new CircuitBreaker('bing-web');
+const bingImageBreaker = new CircuitBreaker('bing-images');
+const bingNewsBreaker = new CircuitBreaker('bing-news');
+const googleNewsRssBreaker = new CircuitBreaker('google-news-rss');
+
+// Log terstruktur biar gampang di-grep/monitor di Railway logs.
+// Kalau mau notifikasi aktif (Telegram/Discord webhook dll), panggil fungsi ini
+// dan tambahkan pengiriman HTTP ke webhook kamu di sini.
+function alertEcosystem(level, message, meta = {}) {
+  const payload = { level, message, meta, timestamp: new Date().toISOString() };
+  console.error(`[ALERT:${level}]`, JSON.stringify(payload));
+  // TODO opsional: kirim ke webhook Discord/Telegram/Slack di sini
+  // axios.post(process.env.ALERT_WEBHOOK_URL, {...}).catch(() => {});
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images Only)
+// 1. SCRAPER WEB (Bing Search) — dengan circuit breaker
 // ==========================================
-async function fetchImages(query, config, limit, offset) {
-  const images = [];
-  const firstIndex = offset > 0 ? offset + 1 : 1;
-  const fetchCount = Math.max(limit, 20);
-
-  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=${firstIndex}`;
-
-  const res = await axios.get(bingImgUrl, {
-    headers: {
-      'User-Agent': getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-      'Referer': 'https://www.bing.com/'
-    },
-    timeout: 9000
-  });
-
-  const html = res.data;
-
-  if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
-    throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
+async function fetchWebResults(query, config, limit, offset) {
+  if (bingWebBreaker.isOpen()) {
+    throw new Error('CIRCUIT_OPEN: Sumber web sedang di-cooldown karena gagal berulang.');
   }
 
-  const $ = cheerio.load(html);
+  try {
+    const items = [];
+    const firstIndex = offset > 0 ? offset + 1 : 1;
+    const bingWebUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&first=${firstIndex}`;
 
-  // Method 1: Parsing Atribut JSON 'm' dari Cheerio
-  $('a.iusc, div.iuscp a').each((_, el) => {
-    if (images.length >= limit) return false;
+    const res = await axios.get(bingWebUrl, {
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+        'Referer': 'https://www.bing.com/'
+      },
+      timeout: 9000
+    });
 
-    const mAttr = $(el).attr('m');
-    if (mAttr) {
-      try {
-        const mData = JSON.parse(mAttr);
-        const imageUrl = mData.murl;
-        const thumbnailUrl = mData.turl;
-        const title = mData.t || mData.desc || query;
-        const targetLink = mData.purl;
+    const html = res.data;
+    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+      throw new Error('BLOCKED_CAPTCHA: Bing mendeteksi bot/minta verifikasi Captcha.');
+    }
 
+    const $ = cheerio.load(html);
+
+    $('li.b_algo').each((_, el) => {
+      if (items.length >= limit) return false;
+
+      const titleEl = $(el).find('h2 a').first();
+      const snippetEl = $(el).find('div.b_caption p, p.b_lineclamp').first();
+
+      const title = titleEl.text().trim();
+      const link = titleEl.attr('href');
+      const snippet = snippetEl.text().trim();
+
+      if (title && link && link.startsWith('http')) {
+        let domain = '';
+        try { domain = new URL(link).hostname.replace(/^www\./, ''); } catch (e) {}
+
+        items.push({
+          title, link,
+          snippet: snippet || 'Tidak ada deskripsi.',
+          domain,
+          position: offset + items.length + 1
+        });
+      }
+    });
+
+    if (items.length === 0) throw new Error('EMPTY_RESULT: Selector mungkin sudah berubah, 0 item ditemukan.');
+
+    bingWebBreaker.recordSuccess();
+    return items;
+  } catch (err) {
+    bingWebBreaker.recordFailure();
+    if (bingWebBreaker.isOpen()) {
+      alertEcosystem('CRITICAL', 'Sumber web (Bing) kemungkinan lumpuh / HTML berubah', { error: err.message });
+    }
+    throw err;
+  }
+}
+
+// ==========================================
+// 2. SCRAPER GAMBAR (Bing Images) — dengan circuit breaker
+// ==========================================
+async function fetchImages(query, config, limit, offset) {
+  if (bingImageBreaker.isOpen()) {
+    throw new Error('CIRCUIT_OPEN: Sumber gambar sedang di-cooldown karena gagal berulang.');
+  }
+
+  try {
+    const images = [];
+    const firstIndex = offset > 0 ? offset + 1 : 1;
+    const fetchCount = Math.max(limit, 20);
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=${firstIndex}`;
+
+    const res = await axios.get(bingImgUrl, {
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+        'Referer': 'https://www.bing.com/'
+      },
+      timeout: 9000
+    });
+
+    const html = res.data;
+    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+      throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
+    }
+
+    const $ = cheerio.load(html);
+
+    $('a.iusc, div.iuscp a').each((_, el) => {
+      if (images.length >= limit) return false;
+      const mAttr = $(el).attr('m');
+      if (mAttr) {
+        try {
+          const mData = JSON.parse(mAttr);
+          const imageUrl = mData.murl;
+          const thumbnailUrl = mData.turl;
+          const title = mData.t || mData.desc || query;
+          const targetLink = mData.purl;
+
+          if (imageUrl && imageUrl.startsWith('http')) {
+            let domain = '';
+            try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
+
+            images.push({
+              title, image: imageUrl, imageUrl,
+              thumbnail: thumbnailUrl || imageUrl,
+              thumbnailUrl: thumbnailUrl || imageUrl,
+              width: mData.mw || 0, height: mData.mh || 0,
+              imageWidth: mData.mw || 0, imageHeight: mData.mh || 0,
+              source: domain || 'bing', domain: domain || 'bing',
+              pageUrl: targetLink || imageUrl, link: targetLink || imageUrl,
+              position: offset + images.length + 1
+            });
+          }
+        } catch (e) {}
+      }
+    });
+
+    // Fallback regex kalau selector utama gagal total (Bing ubah markup)
+    if (images.length === 0) {
+      const regex = /&quot;murl&quot;:&quot;(.*?)&quot;.*?&quot;turl&quot;:&quot;(.*?)&quot;.*?&quot;t&quot;:&quot;(.*?)&quot;/g;
+      let match;
+      while ((match = regex.exec(html)) !== null && images.length < limit) {
+        const imageUrl = match[1];
+        const thumbnailUrl = match[2];
+        const title = match[3];
         if (imageUrl && imageUrl.startsWith('http')) {
-          let domain = '';
-          try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
-
           images.push({
-            title: title,
-            image: imageUrl,
-            imageUrl: imageUrl,
-            thumbnail: thumbnailUrl || imageUrl,
-            thumbnailUrl: thumbnailUrl || imageUrl,
-            width: mData.mw || 0,
-            height: mData.mh || 0,
-            imageWidth: mData.mw || 0,
-            imageHeight: mData.mh || 0,
-            source: domain || 'bing',
-            domain: domain || 'bing',
-            pageUrl: targetLink || imageUrl,
-            link: targetLink || imageUrl,
+            title: title || query, image: imageUrl, imageUrl,
+            thumbnail: thumbnailUrl || imageUrl, thumbnailUrl: thumbnailUrl || imageUrl,
+            source: 'bing', domain: 'bing.com',
+            pageUrl: imageUrl, link: imageUrl,
             position: offset + images.length + 1
           });
         }
-      } catch (e) {}
-    }
-  });
-
-  // Method 2: Fallback Regex Extractor (Jika Cheerio gagal/Bing ubah tag HTML)
-  if (images.length === 0) {
-    const regex = /&quot;murl&quot;:&quot;(.*?)&quot;.*?&quot;turl&quot;:&quot;(.*?)&quot;.*?&quot;t&quot;:&quot;(.*?)&quot;/g;
-    let match;
-
-    while ((match = regex.exec(html)) !== null && images.length < limit) {
-      const imageUrl = match[1];
-      const thumbnailUrl = match[2];
-      const title = match[3];
-
-      if (imageUrl && imageUrl.startsWith('http')) {
-        images.push({
-          title: title || query,
-          image: imageUrl,
-          imageUrl: imageUrl,
-          thumbnail: thumbnailUrl || imageUrl,
-          thumbnailUrl: thumbnailUrl || imageUrl,
-          source: 'bing',
-          domain: 'bing.com',
-          pageUrl: imageUrl,
-          link: imageUrl,
-          position: offset + images.length + 1
-        });
       }
     }
-  }
 
-  return images;
+    if (images.length === 0) throw new Error('EMPTY_RESULT: Selector & regex fallback gambar sama-sama gagal.');
+
+    bingImageBreaker.recordSuccess();
+    return images;
+  } catch (err) {
+    bingImageBreaker.recordFailure();
+    if (bingImageBreaker.isOpen()) {
+      alertEcosystem('CRITICAL', 'Sumber gambar (Bing) kemungkinan lumpuh / HTML berubah', { error: err.message });
+    }
+    throw err;
+  }
 }
 
 // ==========================================
-// 3. SCRAPER BERITA (Google News RSS)
+// 3. SCRAPER BERITA — Bing News (primer) + Google RSS (fallback)
 // ==========================================
-async function fetchNews(query, config, limit, offset) {
-  const newsItems = [];
-  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${config.hl}-${config.gl.toUpperCase()}&gl=${config.gl.toUpperCase()}&ceid=${config.gl.toUpperCase()}:${config.hl}`;
 
-  const feed = await rssParser.parseURL(rssUrl);
-  const rawItems = feed.items || [];
-  const pagedItems = rawItems.slice(offset, offset + limit);
+// Beberapa strategi selector berurutan untuk tiap elemen.
+// Kalau Bing ubah 1 class, strategi berikutnya di array ini yang dicoba.
+const NEWS_CARD_SELECTORS = ['div.news-card', 'div.t_s', '.newsitem', 'div[class*="news-card"]'];
 
-  for (let i = 0; i < pagedItems.length; i++) {
-    const item = pagedItems[i];
-    const originalLink = extractDirectNewsUrl(item.link);
+function tryFindNewsCards($) {
+  for (const sel of NEWS_CARD_SELECTORS) {
+    const found = $(sel);
+    if (found.length > 0) return found;
+  }
+  return $(); // kosong kalau semua strategi gagal
+}
 
-    let thumbnail = null;
-    if (item.mediaThumbnail && item.mediaThumbnail.$&& item.mediaThumbnail.$.url) {
-      thumbnail = item.mediaThumbnail.$.url;
-    } else if (item.mediaContent && item.mediaContent.$&& item.mediaContent.$.url) {
-      thumbnail = item.mediaContent.$.url;
-    } else {
-      thumbnail = extractImageFromHtml(item.content || item.snippet || item.summary);
+function extractTitleAndLink($, el) {
+  const strategies = ['a.title', 'a[href].title', '.title a', 'a'];
+  for (const sel of strategies) {
+    const cand = $(el).find(sel).first();
+    const t = cand.text().trim();
+    const l = cand.attr('href');
+    if (t && l && l.startsWith('http')) return { title: t, link: l };
+  }
+  return { title: '', link: '' };
+}
+
+function extractThumbnail($, el) {
+  const strategies = [
+    () => $(el).find('img.rms_img').first().attr('src'),
+    () => $(el).find('.imgpr img').first().attr('src'),
+    () => $(el).find('img').first().attr('data-src'),
+    () => $(el).find('img').first().attr('src')
+  ];
+  for (const strat of strategies) {
+    let src = strat();
+    if (src) {
+      if (src.startsWith('//')) src = `https:${src}`;
+      if (src.startsWith('http')) return src;
     }
+  }
+  return null;
+}
 
-    let sourceName = item.source || 'Berita';
-    if (typeof sourceName === 'object' && sourceName._) {
-      sourceName = sourceName._;
-    }
+async function fetchNewsViaBing(query, config, limit, offset) {
+  if (bingNewsBreaker.isOpen()) {
+    throw new Error('CIRCUIT_OPEN: Sumber berita Bing sedang di-cooldown.');
+  }
 
-    let domain = '';
-    try {
-      domain = new URL(originalLink).hostname.replace(/^www\./, '');
-    } catch (e) {}
+  try {
+    const newsItems = [];
+    const first = offset > 0 ? offset + 1 : 1;
+    const bingNewsUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&first=${first}`;
 
-    const cleanSnippet = item.contentSnippet || (item.content ? cheerio.load(item.content).text() : '');
-
-    newsItems.push({
-      title: item.title ? item.title.replace(/ - [^-]+$/, '') : '',
-      link: originalLink,
-      snippet: cleanSnippet.trim(),
-      publisher: sourceName,
-      domain,
-      thumbnailUrl: thumbnail,
-      publishedAt: item.pubDate || item.isoDate || null,
-      position: offset + i + 1
+    const res = await axios.get(bingNewsUrl, {
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+        'Referer': 'https://www.bing.com/'
+      },
+      timeout: 9000
     });
+
+    const html = res.data;
+    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+      throw new Error('BLOCKED_CAPTCHA: Bing News mendeteksi bot/minta verifikasi Captcha.');
+    }
+
+    const $ = cheerio.load(html);
+    const cards = tryFindNewsCards($);
+
+    cards.each((_, el) => {
+      if (newsItems.length >= limit) return false;
+
+      const { title, link } = extractTitleAndLink($, el);
+      if (!title || !link) return; // skip item cacat, jangan crash semua
+
+      const snippet = $(el).find('.snippet').first().text().trim();
+      const publisher = $(el).find('.source a, .source').first().text().trim();
+      const thumbnail = extractThumbnail($, el);
+
+      let domain = '';
+      try { domain = new URL(link).hostname.replace(/^www\./, ''); } catch (e) {}
+
+      newsItems.push({
+        title, link,
+        snippet: snippet || 'Tidak ada deskripsi.',
+        publisher: publisher || domain || 'Berita',
+        domain,
+        thumbnailUrl: thumbnail,
+        publishedAt: null,
+        position: offset + newsItems.length + 1
+      });
+    });
+
+    if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Semua strategi selector berita Bing gagal, 0 item.');
+
+    bingNewsBreaker.recordSuccess();
+    return newsItems;
+  } catch (err) {
+    bingNewsBreaker.recordFailure();
+    if (bingNewsBreaker.isOpen()) {
+      alertEcosystem('CRITICAL', 'Sumber berita Bing kemungkinan lumpuh / HTML berubah', { error: err.message });
+    }
+    throw err;
+  }
+}
+
+async function fetchNewsViaGoogleRss(query, config, limit, offset) {
+  if (googleNewsRssBreaker.isOpen()) {
+    throw new Error('CIRCUIT_OPEN: Fallback Google News RSS sedang di-cooldown.');
   }
 
-  return newsItems;
+  try {
+    const newsItems = [];
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${config.hl}-${config.gl.toUpperCase()}&gl=${config.gl.toUpperCase()}&ceid=${config.gl.toUpperCase()}:${config.hl}`;
+
+    const feed = await rssParser.parseURL(rssUrl);
+    const rawItems = feed.items || [];
+    const pagedItems = rawItems.slice(offset, offset + limit);
+
+    if (pagedItems.length === 0) throw new Error('EMPTY_RESULT: RSS Google News kosong.');
+
+    for (let i = 0; i < pagedItems.length; i++) {
+      const item = pagedItems[i];
+      if (!item.title || !item.link) continue; // skip item cacat
+
+      let thumbnail = null;
+      if (item.mediaThumbnail?.$?.url) thumbnail = item.mediaThumbnail.$.url;
+      else if (item.mediaContent?.$?.url) thumbnail = item.mediaContent.$.url;
+      else thumbnail = extractImageFromHtml(item.content || item.snippet || item.summary);
+
+      let sourceName = item.source || 'Berita';
+      if (typeof sourceName === 'object' && sourceName._) sourceName = sourceName._;
+
+      let domain = '';
+      try { domain = new URL(item.link).hostname.replace(/^www\./, ''); } catch (e) {}
+
+      const cleanSnippet = item.contentSnippet || (item.content ? cheerio.load(item.content).text() : '');
+
+      newsItems.push({
+        title: item.title.replace(/ - [^-]+$/, ''),
+        link: item.link, // catatan: ini masih URL redirect Google, bukan URL asli situs
+        snippet: cleanSnippet.trim(),
+        publisher: sourceName,
+        domain,
+        thumbnailUrl: thumbnail, // biasanya null, RSS jarang punya gambar
+        publishedAt: item.pubDate || item.isoDate || null,
+        position: offset + newsItems.length + 1,
+        _isFallbackSource: true // penanda internal: dari fallback, bukan sumber utama
+      });
+    }
+
+    if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Semua item RSS cacat/kosong setelah filter.');
+
+    googleNewsRssBreaker.recordSuccess();
+    return newsItems;
+  } catch (err) {
+    googleNewsRssBreaker.recordFailure();
+    if (googleNewsRssBreaker.isOpen()) {
+      alertEcosystem('CRITICAL', 'Fallback Google News RSS JUGA lumpuh — semua sumber berita down!', { error: err.message });
+    }
+    throw err;
+  }
 }
+
+// Orkestrator: coba Bing dulu, kalau gagal baru Google RSS.
+// Kalau DUA-DUANYA gagal, baru API return error ke client (bukan diam-diam kosong).
+async function fetchNews(query, config, limit, offset) {
+  try {
+    return await fetchNewsViaBing(query, config, limit, offset);
+  } catch (bingErr) {
+    console.warn(`[FALLBACK] Bing News gagal ("${bingErr.message}"), mencoba Google News RSS...`);
+    try {
+      return await fetchNewsViaGoogleRss(query, config, limit, offset);
+    } catch (rssErr) {
+      // Dua-duanya gagal — ini yang benar-benar harus diketahui ekosistem kamu
+      alertEcosystem('FATAL', 'Semua sumber berita (Bing + Google RSS) gagal total', {
+        bingError: bingErr.message,
+        rssError: rssErr.message,
+        query
+      });
+      throw new Error(`ALL_NEWS_SOURCES_FAILED: Bing(${bingErr.message}) | RSS(${rssErr.message})`);
+    }
+  }
+}
+
+// ==========================================
+// HEALTH CHECK — supaya kamu tahu duluan, bukan user
+// ==========================================
+app.get('/api/health', (req, res) => {
+  const breakers = [bingWebBreaker, bingImageBreaker, bingNewsBreaker, googleNewsRssBreaker];
+  const statuses = breakers.map(b => b.getStatus());
+  const anyOpen = statuses.some(s => s.state.startsWith('OPEN'));
+
+  res.status(anyOpen ? 503 : 200).json({
+    status: anyOpen ? 'degraded' : 'healthy',
+    breakers: statuses,
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ==========================================
 // MAIN ROUTE API (/api/search)
@@ -298,7 +505,6 @@ app.get('/api/search', async (req, res) => {
   const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
   const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}_start${offset}`;
 
-  // Cek Cache Memory
   if (cache.has(cacheKey)) {
     const cachedData = cache.get(cacheKey);
     if (Date.now() - cachedData.timestamp < CACHE_TTL) {
@@ -317,7 +523,6 @@ app.get('/api/search', async (req, res) => {
       results = await fetchWebResults(query, config, limit, offset);
     }
 
-    // Jika Hasil Kosong, Berikan Response Error Jelas
     if (results.length === 0) {
       return res.status(502).json({
         status: 'error',
@@ -331,19 +536,14 @@ app.get('/api/search', async (req, res) => {
     const responsePayload = {
       status: 'success',
       searchParameters: {
-        q: query,
-        type: searchType,
-        hl: config.hl,
-        gl: config.gl,
-        num: limit,
-        start: offset,
-        page: Math.floor(offset / limit) + 1
+        q: query, type: searchType, hl: config.hl, gl: config.gl,
+        num: limit, start: offset, page: Math.floor(offset / limit) + 1
       },
       searchInformation: {
         formattedSearchTime: searchTime,
         totalResults: results.length
       },
-      results: results,
+      results,
       images: searchType === 'images' ? results : undefined,
       items: searchType === 'search' ? results : undefined,
       news: searchType === 'news' ? results : undefined
@@ -358,7 +558,13 @@ app.get('/api/search', async (req, res) => {
     let statusCode = 500;
     let customMessage = 'Terjadi kesalahan pada server backend.';
 
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+    if (error.message.startsWith('CIRCUIT_OPEN')) {
+      statusCode = 503;
+      customMessage = 'Sumber data sedang dalam mode pemulihan otomatis (circuit breaker). Coba lagi dalam beberapa menit.';
+    } else if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
+      statusCode = 502;
+      customMessage = 'Semua sumber berita (primer & fallback) gagal. Tim sudah diberi notifikasi otomatis.';
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
       statusCode = 504;
       customMessage = 'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat/terputus.';
     } else if (error.message.includes('BLOCKED_CAPTCHA')) {
