@@ -181,15 +181,15 @@ async function fetchWebResults(query, config, limit, offset) {
   }
 }
 
-// Helper cookie khusus Bing Images
+// Cookie sintetis agar Bing mengenali region/bahasa tanpa memicu bot detection
 function buildBingImageCookies(config) {
   const region = (config.gl || 'id').toUpperCase();
   const lang = config.hl || 'id';
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
+  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang};`;
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) — CLEAN & NATURAL
+// 2. SCRAPER GAMBAR (Bing Images) — AMAN & PRESI
 // ==========================================
 async function fetchImages(query, config, limit, offset) {
   if (bingImageBreaker.isOpen()) {
@@ -201,23 +201,25 @@ async function fetchImages(query, config, limit, offset) {
     const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
 
-    // Bersihkan spasi ganda tanpa mengubah/memaksa kutip ganda
-    const cleanQuery = query.trim().replace(/\s+/g, ' ');
-
-    // Tambahkan qft=+filterui:photo-photo agar Bing fokus pada pencocokan gambar berbasis teks query
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(cleanQuery)}&form=HDRSC3&scenario=ImageBasicHover&qft=+filterui:photo-photo&first=${firstIndex}&count=${fetchCount}`;
+    // URL simpel tanpa tambahan &qft= atau manipulasi query
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&first=${firstIndex}&count=${fetchCount}`;
 
     const res = await axios.get(bingImgUrl, {
       headers: {
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
         'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"Windows"',
-        'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(cleanQuery)}`,
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': 'https://www.bing.com/images/',
         'Cookie': buildBingImageCookies(config)
       },
       timeout: 9000
@@ -230,7 +232,7 @@ async function fetchImages(query, config, limit, offset) {
 
     const $ = cheerio.load(html);
 
-    // Ambil khusus dari kontainer grid gambar utama Bing (#mmComponent_images_1)
+    // Ambil khusus dari kontainer grid gambar utama (#mmComponent_images_1)
     const container = $('#mmComponent_images_1').length ? $('#mmComponent_images_1') : $('body');
 
     container.find('a.iusc, div.iuscp a').each((_, el) => {
