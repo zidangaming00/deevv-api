@@ -88,7 +88,7 @@ async function fetchImages(query, config, limit, headers) {
       let imageHeight = parseInt(mData.mh || mData.h, 10) || null;
 
       if (!imageWidth || !imageHeight) {
-        const dimAttr = $(el).attr('data-dim') \vert{}\vert{}$(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
+        const dimAttr = $(el).attr('data-dim') || $(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
         if (dimAttr) {
           const match = dimAttr.match(/(\d+)\s*[\|x×:]\s*(\d+)/i);
           if (match) {
