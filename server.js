@@ -181,15 +181,18 @@ async function fetchWebResults(query, config, limit, offset) {
   }
 }
 
-// Cookie & Header sintetis agar Bing menganggap request berasal dari browser Indonesia yang valid
+// ==========================================
+// FIX: Format Cookie Gambar (Bing butuh format id-ID, bukan cuma ID)
+// ==========================================
 function buildBingImageCookies(config) {
-  const region = (config.gl || 'id').toUpperCase();
+  const mkt = config.mkt || 'id-ID'; 
   const lang = config.hl || 'id';
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
+  const region = (config.gl || 'id').toUpperCase();
+  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${mkt}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) - FIX 100% SAMA DENGAN BROWSER
+// 2. SCRAPER GAMBAR (Bing Images) - FOKUS FIX ERROR
 // ==========================================
 async function fetchImages(query, config, limit, offset) {
   if (bingImageBreaker.isOpen()) {
@@ -201,41 +204,37 @@ async function fetchImages(query, config, limit, offset) {
     const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
 
-    // Gunakan parameter form=HDRSC3 & scenario=ImageBasicHover persis seperti URL browser
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC3&scenario=ImageBasicHover&first=${firstIndex}&count=${fetchCount}`;
+    // FIX: Tambahkan parameter form=HDRSC2 agar klik dianggap natural
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=${firstIndex}&count=${fetchCount}`;
 
     const res = await axios.get(bingImgUrl, {
       headers: {
         'User-Agent': getRandomUserAgent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+        // FIX: Referer disamarkan dari halaman Web Search
+        'Referer': `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
-        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'same-origin',
         'Sec-Fetch-User': '?1',
         'Upgrade-Insecure-Requests': '1',
-        'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
-        'Cookie': buildBingImageCookies(config)
+        'Cookie': buildBingImageCookies(config) // Panggil fungsi cookie yang sudah diperbaiki
       },
-      timeout: 9000
+      timeout: 10000
     });
 
     const html = res.data;
+
     if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
       throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
     }
 
     const $ = cheerio.load(html);
 
-    // Ambil khusus dari kontainer grid gambar utama Bing (#mmComponent_images_1)
-    const container = $('#mmComponent_images_1').length ? $('#mmComponent_images_1') : $('body');
-
-    container.find('a.iusc, div.iuscp a').each((_, el) => {
+    $('a.iusc').each((_, el) => {
       if (images.length >= limit) return false;
       const mAttr = $(el).attr('m');
       if (mAttr) {
@@ -251,7 +250,7 @@ async function fetchImages(query, config, limit, offset) {
             try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
 
             images.push({
-              title,
+              title: title.replace(/<[^>]+>/g, ''),
               image: imageUrl,
               imageUrl,
               thumbnail: thumbnailUrl || imageUrl,
@@ -271,14 +270,16 @@ async function fetchImages(query, config, limit, offset) {
       }
     });
 
-    if (images.length === 0) throw new Error('EMPTY_RESULT: Selector & regex fallback gambar sama-sama gagal.');
+    if (images.length === 0) {
+      throw new Error('EMPTY_RESULT: Gagal mengekstrak gambar, kemungkinan dilempar ke halaman Trending karena deteksi bot.');
+    }
 
     bingImageBreaker.recordSuccess();
     return images;
   } catch (err) {
     bingImageBreaker.recordFailure();
     if (bingImageBreaker.isOpen()) {
-      alertEcosystem('CRITICAL', 'Sumber gambar (Bing) kemungkinan lumpuh / HTML berubah', { error: err.message });
+      alertEcosystem('CRITICAL', 'Sumber gambar (Bing) lumpuh', { error: err.message, query });
     }
     throw err;
   }
