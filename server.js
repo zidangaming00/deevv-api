@@ -5,76 +5,109 @@ import * as cheerio from 'cheerio';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Endpoint Utama
+// Helper: Dekode URL Bing Redirect ke URL Asli
+function decodeBingUrl(bingUrl) {
+  if (!bingUrl) return '';
+  if (bingUrl.includes('&u=a1')) {
+    try {
+      const match = bingUrl.match(/&u=a1([^&]+)/);
+      if (match && match[1]) {
+        let base64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (base64.length % 4) base64 += '=';
+        return Buffer.from(base64, 'base64').toString('utf-8');
+      }
+    } catch (e) {
+      return bingUrl;
+    }
+  }
+  return bingUrl;
+}
+
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
 
   if (!query) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Parameter query "q" wajib diisi. Contoh: /api/search?q=belajar+javascript'
-    });
+    return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
   }
 
   try {
-    // 1. Fetch HTML dari Bing Search
     const targetUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=id`;
-    
+
     const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7'
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
       },
-      timeout: 10000 // Timeout 10 detik
+      timeout: 10000
     });
 
-    // 2. Parse HTML menggunakan Cheerio
     const $ = cheerio.load(response.data);
-    const organicResults = [];
 
-    // Elemen hasil organik di Bing berada di selector '#b_results .b_algo'
+    // 1. Instant Answer / Knowledge Box (Jika Ada)
+    let instantAnswer = null;
+    const answerNode = $('.b_ans, .b_entityTP, .b_promowidget').first();
+    if (answerNode.length) {
+      const title = answerNode.find('h2, .b_entityTitle').first().text().trim();
+      const snippet = answerNode.find('.b_caption, .b_entityDesc, .rwrl').first().text().trim();
+      if (title || snippet) {
+        instantAnswer = { title, snippet };
+      }
+    }
+
+    // 2. Hasil Pencarian Organik
+    const organicResults = [];
     $('#b_results .b_algo').each((index, element) => {
       const titleEl = $(element).find('h2 a');
-      const snippetEl = $(element).find('.b_caption p, .b_algoDesc');
+      const snippetEl = $(element).find('.b_caption p, .b_algoDesc, .b_lineclamp2');
 
       const title = titleEl.text().trim();
-      const link = titleEl.attr('href');
+      const rawLink = titleEl.attr('href');
+      const directLink = decodeBingUrl(rawLink);
       const snippet = snippetEl.text().trim();
 
-      if (title && link) {
+      // Mengambil favicon menggunakan Google Favicon API berdasarkan domain asli
+      let favicon = null;
+      if (directLink) {
+        try {
+          const domain = new URL(directLink).hostname;
+          favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+        } catch (e) {}
+      }
+
+      if (title && directLink) {
         organicResults.push({
           position: organicResults.length + 1,
           title,
-          link,
+          link: directLink,
+          favicon,
           snippet: snippet || 'Deskripsi tidak tersedia.'
         });
       }
     });
 
-    // 3. Response JSON Format
+    // 3. Related Searches (Pencarian Terkait)
+    const relatedSearches = [];
+    $('.b_rs a, #b_results .b_vList li a').each((i, el) => {
+      const text = $(el).text().trim();
+      if (text && !relatedSearches.includes(text)) {
+        relatedSearches.push(text);
+      }
+    });
+
+    // Response JSON Lengkap
     res.json({
       status: 'success',
       source: 'bing',
       query,
+      instant_answer: instantAnswer,
       total_results: organicResults.length,
-      results: organicResults
+      organic: organicResults,
+      related_searches: relatedSearches
     });
 
   } catch (error) {
-    console.error('Bing Scraping Error:', error.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Gagal mengambil data dari Bing.',
-      error: error.message
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-// Middleware Endpoint Default
-app.get('/', (req, res) => {
-  res.send('Bing SERP API Backend Aktif! Gunakan endpoint /api/search?q=kata_kunci');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server Bing Scraper berjalan di port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server aktif di port ${PORT}`));
