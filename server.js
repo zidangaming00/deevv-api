@@ -28,7 +28,6 @@ const rssParser = new RssParser({
 const cache = new Map();
 const CACHE_TTL = 10 * 60 * 1000; // 10 menit
 
-// User Agent Desktop Modern
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -47,14 +46,13 @@ function resolveLanguageConfig(queryParams, acceptLanguageHeader) {
   return { hl, gl, mkt };
 }
 
-// Helper Dekode Redirect Google News ke Direct Link Original
+// Helper Dekode Redirect Google News
 function extractDirectNewsUrl(googleNewsUrl) {
   if (!googleNewsUrl) return '';
   try {
     const urlObj = new URL(googleNewsUrl);
     const directParam = urlObj.searchParams.get('url');
-    if (directParam) return directParam;
-    return googleNewsUrl;
+    return directParam || googleNewsUrl;
   } catch (err) {
     return googleNewsUrl;
   }
@@ -72,30 +70,42 @@ function extractImageFromHtml(htmlSnippet) {
 }
 
 // ==========================================
-// 1. SCRAPER WEB (Google Search)
+// 1. SCRAPER WEB (Bing Search Only)
 // ==========================================
-async function fetchWebResults(query, config, limit, offset, headers) {
+async function fetchWebResults(query, config, limit, offset) {
   const items = [];
-  const start = offset || 0;
-  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=${config.hl}&gl=${config.gl}&start=${start}&num=${limit + 5}`;
+  const firstIndex = offset > 0 ? offset + 1 : 1;
+  const bingWebUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&first=${firstIndex}`;
 
-  const res = await axios.get(googleUrl, { headers, timeout: 8000 });
-  const $ = cheerio.load(res.data);
+  const res = await axios.get(bingWebUrl, {
+    headers: {
+      'User-Agent': getRandomUserAgent(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+      'Referer': 'https://www.bing.com/'
+    },
+    timeout: 9000
+  });
 
-  let position = start + 1;
+  const html = res.data;
+  if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+    throw new Error('BLOCKED_CAPTCHA: Bing mendeteksi bot/minta verifikasi Captcha.');
+  }
 
-  $('div.g, div[data-hveid]').each((_, el) => {
+  const $ = cheerio.load(html);
+
+  // Parsing Hasil Web Bing
+  $('li.b_algo').each((_, el) => {
     if (items.length >= limit) return false;
 
-    const titleEl = $(el).find('h3').first();
-    const linkEl = $(el).find('a').first();
-    const snippetEl = $(el).find('div.VwiC3b, div[style*="-webkit-line-clamp"]').first();
+    const titleEl = $(el).find('h2 a').first();
+    const snippetEl = $(el).find('div.b_caption p, p.b_lineclamp').first();
 
     const title = titleEl.text().trim();
-    const link = linkEl.attr('href');
+    const link = titleEl.attr('href');
     const snippet = snippetEl.text().trim();
 
-    if (title && link && link.startsWith('http') && !link.includes('google.com/search')) {
+    if (title && link && link.startsWith('http')) {
       let domain = '';
       try {
         domain = new URL(link).hostname.replace(/^www\./, '');
@@ -104,9 +114,9 @@ async function fetchWebResults(query, config, limit, offset, headers) {
       items.push({
         title,
         link,
-        snippet,
+        snippet: snippet || 'Tidak ada deskripsi.',
         domain,
-        position: position++
+        position: offset + items.length + 1
       });
     }
   });
@@ -115,86 +125,97 @@ async function fetchWebResults(query, config, limit, offset, headers) {
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images Anti-Block)
+// 2. SCRAPER GAMBAR (Bing Images Only)
 // ==========================================
-async function fetchImages(query, config, limit, offset, baseHeaders) {
+async function fetchImages(query, config, limit, offset) {
   const images = [];
   const firstIndex = offset > 0 ? offset + 1 : 1;
   const fetchCount = Math.max(limit, 20);
 
   const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=${firstIndex}`;
 
-  const customHeaders = {
-    ...baseHeaders,
-    'User-Agent': getRandomUserAgent(),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://www.bing.com/'
-  };
+  const res = await axios.get(bingImgUrl, {
+    headers: {
+      'User-Agent': getRandomUserAgent(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+      'Referer': 'https://www.bing.com/'
+    },
+    timeout: 9000
+  });
 
-  const res = await axios.get(bingImgUrl, { headers: customHeaders, timeout: 9000 });
   const html = res.data;
-  const $ = cheerio.load(html);
 
-  // Deteksi Jika Terkena Captcha / Bot Block dari Bing
   if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
-    throw new Error("Request diblokir oleh Bing Security (Captcha/Bot Detection).");
+    throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
   }
 
-  $('a.iusc, a[href*="mediaurl="], a[href*="detailV2"], div.iuscp a').each((_, el) => {
+  const $ = cheerio.load(html);
+
+  // Method 1: Parsing Atribut JSON 'm' dari Cheerio
+  $('a.iusc, div.iuscp a').each((_, el) => {
     if (images.length >= limit) return false;
 
     const mAttr = $(el).attr('m');
-    let imageUrl = '';
-    let title = '';
-    let thumbnailUrl = '';
-    let targetLink = '';
-    let imageWidth = 0;
-    let imageHeight = 0;
-
     if (mAttr) {
       try {
         const mData = JSON.parse(mAttr);
-        imageUrl = mData.murl;
-        title = mData.t || mData.desc;
-        thumbnailUrl = mData.turl;
-        targetLink = mData.purl;
-        imageWidth = mData.mw || 0;
-        imageHeight = mData.mh || 0;
+        const imageUrl = mData.murl;
+        const thumbnailUrl = mData.turl;
+        const title = mData.t || mData.desc || query;
+        const targetLink = mData.purl;
+
+        if (imageUrl && imageUrl.startsWith('http')) {
+          let domain = '';
+          try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
+
+          images.push({
+            title: title,
+            image: imageUrl,
+            imageUrl: imageUrl,
+            thumbnail: thumbnailUrl || imageUrl,
+            thumbnailUrl: thumbnailUrl || imageUrl,
+            width: mData.mw || 0,
+            height: mData.mh || 0,
+            imageWidth: mData.mw || 0,
+            imageHeight: mData.mh || 0,
+            source: domain || 'bing',
+            domain: domain || 'bing',
+            pageUrl: targetLink || imageUrl,
+            link: targetLink || imageUrl,
+            position: offset + images.length + 1
+          });
+        }
       } catch (e) {}
-    }
-
-    if (!imageUrl) {
-      const href = $(el).attr('href') || '';
-      const match = href.match(/mediaurl=([^&]+)/i);
-      if (match) imageUrl = decodeURIComponent(match[1]);
-    }
-
-    if (imageUrl && imageUrl.startsWith('http')) {
-      let domain = '';
-      try {
-        domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, '');
-      } catch (e) {}
-
-      images.push({
-        title: title || query,
-        // Standarisasi Key Gambar agar Cocok dengan Frontend
-        image: imageUrl,
-        imageUrl: imageUrl,
-        thumbnail: thumbnailUrl || imageUrl,
-        thumbnailUrl: thumbnailUrl || imageUrl,
-        width: imageWidth,
-        height: imageHeight,
-        imageWidth: imageWidth,
-        imageHeight: imageHeight,
-        source: domain || 'unknown',
-        domain: domain || 'unknown',
-        pageUrl: targetLink || imageUrl,
-        link: targetLink || imageUrl,
-        position: offset + images.length + 1
-      });
     }
   });
+
+  // Method 2: Fallback Regex Extractor (Jika Cheerio gagal/Bing ubah tag HTML)
+  if (images.length === 0) {
+    const regex = /&quot;murl&quot;:&quot;(.*?)&quot;.*?&quot;turl&quot;:&quot;(.*?)&quot;.*?&quot;t&quot;:&quot;(.*?)&quot;/g;
+    let match;
+
+    while ((match = regex.exec(html)) !== null && images.length < limit) {
+      const imageUrl = match[1];
+      const thumbnailUrl = match[2];
+      const title = match[3];
+
+      if (imageUrl && imageUrl.startsWith('http')) {
+        images.push({
+          title: title || query,
+          image: imageUrl,
+          imageUrl: imageUrl,
+          thumbnail: thumbnailUrl || imageUrl,
+          thumbnailUrl: thumbnailUrl || imageUrl,
+          source: 'bing',
+          domain: 'bing.com',
+          pageUrl: imageUrl,
+          link: imageUrl,
+          position: offset + images.length + 1
+        });
+      }
+    }
+  }
 
   return images;
 }
@@ -277,7 +298,7 @@ app.get('/api/search', async (req, res) => {
   const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
   const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}_start${offset}`;
 
-  // Cek Cache
+  // Cek Cache Memory
   if (cache.has(cacheKey)) {
     const cachedData = cache.get(cacheKey);
     if (Date.now() - cachedData.timestamp < CACHE_TTL) {
@@ -285,25 +306,28 @@ app.get('/api/search', async (req, res) => {
     }
   }
 
-  const headers = {
-    'User-Agent': getRandomUserAgent(),
-    'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`
-  };
-
   try {
     let results = [];
 
     if (searchType === 'images') {
-      results = await fetchImages(query, config, limit, offset, headers);
+      results = await fetchImages(query, config, limit, offset);
     } else if (searchType === 'news') {
       results = await fetchNews(query, config, limit, offset);
     } else {
-      results = await fetchWebResults(query, config, limit, offset, headers);
+      results = await fetchWebResults(query, config, limit, offset);
+    }
+
+    // Jika Hasil Kosong, Berikan Response Error Jelas
+    if (results.length === 0) {
+      return res.status(502).json({
+        status: 'error',
+        message: 'Hasil pencarian kosong. IP Server hosting kemungkinan diblokir oleh Bing / HTML berubah.',
+        searchParameters: { q: query, type: searchType, start: offset }
+      });
     }
 
     const searchTime = ((Date.now() - startTime) / 1000).toFixed(2);
 
-    // Mengembalikan Properti `results` & `images` agar kompatibel penuh dengan Frontend
     const responsePayload = {
       status: 'success',
       searchParameters: {
@@ -320,20 +344,35 @@ app.get('/api/search', async (req, res) => {
         totalResults: results.length
       },
       results: results,
-      [searchType === 'search' ? 'items' : searchType]: results
+      images: searchType === 'images' ? results : undefined,
+      items: searchType === 'search' ? results : undefined,
+      news: searchType === 'news' ? results : undefined
     };
 
     cache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
     return res.json(responsePayload);
 
   } catch (error) {
-    console.error(`Error pada type=${searchType}:`, error.message);
-    return res.status(500).json({
+    console.error(`[API ERROR] Type=${searchType}:`, error.message);
+
+    let statusCode = 500;
+    let customMessage = 'Terjadi kesalahan pada server backend.';
+
+    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      statusCode = 504;
+      customMessage = 'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat/terputus.';
+    } else if (error.message.includes('BLOCKED_CAPTCHA')) {
+      statusCode = 429;
+      customMessage = 'IP Server Railway terdeteksi bot/terblokir Captcha oleh Bing.';
+    } else if (error.response) {
+      statusCode = error.response.status;
+      customMessage = `Penyedia pencarian mengembalikan status error ${error.response.status}.`;
+    }
+
+    return res.status(statusCode).json({
       status: 'error',
-      message: error.message.includes('diblokir') 
-        ? 'IP Server Railway terdeteksi bot/terblokir oleh penyedia pencarian.' 
-        : 'Gagal mengambil data dari penyedia pencarian.',
-      error: error.message
+      message: customMessage,
+      error_detail: error.message
     });
   }
 });
