@@ -181,18 +181,15 @@ async function fetchWebResults(query, config, limit, offset) {
   }
 }
 
-// ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) — dengan circuit breaker
-// ==========================================
-// Helper cookie khusus Bing Images agar pencarian tidak di-redirect ke fallback/poisoned content
+// Cookie & Header sintetis agar Bing menganggap request berasal dari browser Indonesia yang valid
 function buildBingImageCookies(config) {
-  const region = config.gl.toUpperCase();
-  const lang = config.hl;
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang};`;
+  const region = (config.gl || 'id').toUpperCase();
+  const lang = config.hl || 'id';
+  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) — Fixed Poisoning Defense
+// 2. SCRAPER GAMBAR (Bing Images) - FIX 100% SAMA DENGAN BROWSER
 // ==========================================
 async function fetchImages(query, config, limit, offset) {
   if (bingImageBreaker.isOpen()) {
@@ -203,17 +200,27 @@ async function fetchImages(query, config, limit, offset) {
     const images = [];
     const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
-    
-    // Gunakan URL Bing Images dengan parameter query yang bersih
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=${firstIndex}&count=${fetchCount}`;
+
+    // Gunakan parameter form=HDRSC3 & scenario=ImageBasicHover persis seperti URL browser
+    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC3&scenario=ImageBasicHover&first=${firstIndex}&count=${fetchCount}`;
 
     const res = await axios.get(bingImgUrl, {
       headers: {
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
         'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
-        'Cookie': buildBingImageCookies(config) // <-- KUNCI PERBAIKAN: Kirim Cookie sintetis
+        'Cookie': buildBingImageCookies(config)
       },
       timeout: 9000
     });
@@ -225,8 +232,7 @@ async function fetchImages(query, config, limit, offset) {
 
     const $ = cheerio.load(html);
 
-    // Ambil hanya dari kontainer utama hasil pencarian `#mmComponent_images_1` 
-    // jika kontainer ada, untuk menghindari gambar promo/sidebar.
+    // Ambil khusus dari kontainer grid gambar utama Bing (#mmComponent_images_1)
     const container = $('#mmComponent_images_1').length ? $('#mmComponent_images_1') : $('body');
 
     container.find('a.iusc, div.iuscp a').each((_, el) => {
@@ -245,18 +251,18 @@ async function fetchImages(query, config, limit, offset) {
             try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
 
             images.push({
-              title, 
-              image: imageUrl, 
+              title,
+              image: imageUrl,
               imageUrl,
               thumbnail: thumbnailUrl || imageUrl,
               thumbnailUrl: thumbnailUrl || imageUrl,
-              width: mData.mw || 0, 
+              width: mData.mw || 0,
               height: mData.mh || 0,
-              imageWidth: mData.mw || 0, 
+              imageWidth: mData.mw || 0,
               imageHeight: mData.mh || 0,
-              source: domain || 'bing', 
+              source: domain || 'bing',
               domain: domain || 'bing',
-              pageUrl: targetLink || imageUrl, 
+              pageUrl: targetLink || imageUrl,
               link: targetLink || imageUrl,
               position: offset + images.length + 1
             });
@@ -264,31 +270,6 @@ async function fetchImages(query, config, limit, offset) {
         } catch (e) {}
       }
     });
-
-    // Fallback regex jika selector DOM utama tidak mengembalikan apapun
-    if (images.length === 0) {
-      const regex = /&quot;murl&quot;:&quot;(.*?)&quot;.*?&quot;turl&quot;:&quot;(.*?)&quot;.*?&quot;t&quot;:&quot;(.*?)&quot;/g;
-      let match;
-      while ((match = regex.exec(html)) !== null && images.length < limit) {
-        const imageUrl = match[1];
-        const thumbnailUrl = match[2];
-        const title = match[3];
-        if (imageUrl && imageUrl.startsWith('http')) {
-          images.push({
-            title: title || query, 
-            image: imageUrl, 
-            imageUrl,
-            thumbnail: thumbnailUrl || imageUrl, 
-            thumbnailUrl: thumbnailUrl || imageUrl,
-            source: 'bing', 
-            domain: 'bing.com',
-            pageUrl: imageUrl, 
-            link: imageUrl,
-            position: offset + images.length + 1
-          });
-        }
-      }
-    }
 
     if (images.length === 0) throw new Error('EMPTY_RESULT: Selector & regex fallback gambar sama-sama gagal.');
 
@@ -302,7 +283,6 @@ async function fetchImages(query, config, limit, offset) {
     throw err;
   }
 }
-
 
 // ==========================================
 // 3. SCRAPER BERITA — Bing News (primer) + Google RSS (fallback)
