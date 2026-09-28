@@ -10,6 +10,7 @@
     "axios": "^1.6.8",
     "cheerio": "^1.0.0-rc.12",
     "express": "^4.19.2",
+    "languagedetect": "^2.0.0",
     "node-cache": "^5.1.2"
   }
 }
