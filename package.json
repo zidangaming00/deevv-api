@@ -11,6 +11,7 @@
     "cheerio": "^1.0.0-rc.12",
     "express": "^4.19.2",
     "languagedetect": "^2.0.0",
-    "node-cache": "^5.1.2"
+    "node-cache": "^5.1.2",
+    "rss-parser": "^3.13.0"
   }
 }
