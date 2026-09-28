@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const lngDetector = new LanguageDetect();
 const myCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
 
-// Helper: Decode Redirect URL Bing
+// Helper: Dekode Redirect URL Bing
 function decodeBingUrl(bingUrl) {
   if (!bingUrl) return '';
   if (bingUrl.includes('&u=a1')) {
@@ -28,83 +28,161 @@ function decodeBingUrl(bingUrl) {
   return bingUrl;
 }
 
-// Deteksi Bahasa Dinamis menggunakan Statistical Model
+// Deteksi Bahasa & Wilayah Dinamis
 function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
-  // 1. Opsi A: Jika Klien Mengirimkan Parameter Lang Secara Eksplisit (/api/search?q=...&lang=id)
-  if (reqQuery.lang) {
-    const customLang = reqQuery.lang.toLowerCase();
-    return {
-      lang: customLang,
-      mkt: customLang === 'id' ? 'id-ID' : 'en-US',
-      acceptLang: customLang === 'id' ? 'id-ID,id;q=0.9' : 'en-US,en;q=0.9'
-    };
+  if (reqQuery.hl) {
+    const hl = reqQuery.hl.toLowerCase();
+    const gl = (reqQuery.gl || (hl === 'id' ? 'id' : 'us')).toLowerCase();
+    return { hl, gl, mkt: `${hl}-${gl.toUpperCase()}` };
   }
 
-  // 2. Opsi B: Statistical N-Gram Language Detection pada Query
-  const detected = lngDetector.detect(reqQuery.q, 1); // Ambil 1 hasil teratas
+  const detected = lngDetector.detect(reqQuery.q, 1);
   const detectedLang = detected.length > 0 ? detected[0][0].toLowerCase() : '';
 
-  if (detectedLang === 'indonesian') {
-    return {
-      lang: 'id',
-      mkt: 'id-ID',
-      acceptLang: 'id-ID,id;q=0.9,en-US;q=0.8'
-    };
+  if (detectedLang === 'indonesian' || (acceptLanguageHeader && acceptLanguageHeader.includes('id'))) {
+    return { hl: 'id', gl: 'id', mkt: 'id-ID' };
   }
 
-  // 3. Opsi C: Fallback ke Header Accept-Language dari Pengguna jika Bahasa Tidak Terdeteksi
-  if (acceptLanguageHeader && acceptLanguageHeader.includes('id')) {
-    return {
-      lang: 'id',
-      mkt: 'id-ID',
-      acceptLang: acceptLanguageHeader
-    };
-  }
-
-  // Default Fallback Global/English
-  return {
-    lang: 'en',
-    mkt: 'en-US',
-    acceptLang: 'en-US,en;q=0.9'
-  };
+  return { hl: 'en', gl: 'us', mkt: 'en-US' };
 }
 
 app.get('/api/search', async (req, res) => {
+  const startTime = Date.now();
   const query = req.query.q;
+  const searchType = (req.query.type || 'search').toLowerCase(); // 'search', 'images', atau 'news'
+  const limit = parseInt(req.query.num) || 10;
 
   if (!query) {
     return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
   }
 
-  const cacheKey = `${query.toLowerCase().trim()}_${req.query.lang || 'auto'}`;
+  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}`;
+  
   const cachedData = myCache.get(cacheKey);
   if (cachedData) {
     return res.json({ ...cachedData, cached: true });
   }
 
-  // Deteksi Konfigurasi Bahasa Tanpa Hardcode
-  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+    'Cookie': 'SRCHHPGUSR=PR=1&ADLT=OFF&NRSLT=10; MUID=1234567890;'
+  };
 
   try {
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': config.acceptLang,
-      'Cookie': 'SRCHHPGUSR=PR=1&ADLT=OFF&NRSLT=10; MUID=1234567890;'
+    const responsePayload = {
+      searchParameters: {
+        q: query,
+        type: searchType,
+        engine: searchType === 'images' ? 'google_images' : 'bing',
+        gl: config.gl,
+        hl: config.hl,
+        num: limit
+      }
     };
 
-    const [webRes, newsRes, imgRes] = await Promise.allSettled([
-      axios.get(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.lang}`, { headers, timeout: 8000 }),
-      axios.get(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${config.lang}&gl=${config.lang.toUpperCase()}&ceid=${config.lang.toUpperCase()}:${config.lang}`, { timeout: 8000 }),
-      axios.get(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 })
-    ]);
+    // ==========================================
+    // 1. MODE: GOOGLE IMAGES (tbm=isch)
+    // ==========================================
+    if (searchType === 'images') {
+      const googleImgUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch&gl=${config.gl}&hl=${config.hl}`;
+      const imgRes = await axios.get(googleImgUrl, { headers, timeout: 8000 });
+      const $ = cheerio.load(imgRes.value ? imgRes.value.data : imgRes.data);
+      
+      const images = [];
+      
+      // Extraction JSON Script Data yang di-inject Google Images
+      const scripts = $('script').toArray();
+      for (const script of scripts) {
+        const content = $(script).html() || '';
+        if (content.includes('AF_initDataCallback') && content.includes('thumbnailUrl')) {
+          // Parsing fallback via regex visual element
+        }
+      }
 
-    const organicResults = [];
-    let instantAnswer = null;
-    const relatedSearches = [];
+      // Parsing Standar DOM / Meta Bing & Google Images Fallback
+      $('table.M4A3ed, .rg_i, img.DS19ne, .islrc div.v4g3de').slice(0, limit).each((idx, el) => {
+        const imgEl = $(el).find('img');
+        const src = imgEl.attr('src') || imgEl.attr('data-src');
+        if (src && src.startsWith('http')) {
+          images.push({
+            title: $(el).find('span').text().trim() || query,
+            imageUrl: src,
+            thumbnailUrl: src,
+            source: 'Google Images',
+            domain: 'google.com',
+            link: `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`,
+            position: idx + 1
+          });
+        }
+      });
 
-    if (webRes.status === 'fulfilled') {
-      const $ = cheerio.load(webRes.value.data);
+      // Jika Google memblokir IP Cloud, Fallback Parsing Murni Bing Images dengan Metadata Lengkap
+      if (images.length === 0) {
+        const bingImgRes = await axios.get(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 });
+        const $b = cheerio.load(bingImgRes.data);$b('a.iusc').slice(0, limit).each((idx, el) => {
+          try {
+            const mData = JSON.parse($b(el).attr('m') || '{}');
+            if (mData.murl) {
+              let domainName = '';
+              try { domainName = new URL(mData.purl || mData.murl).hostname; } catch(e){}
+
+              images.push({
+                title: mData.t || query,
+                imageUrl: mData.murl,
+                imageWidth: mData.mw || null,
+                imageHeight: mData.mh || null,
+                thumbnailUrl: mData.turl || mData.murl,
+                source: domainName.replace('www.', ''),
+                domain: domainName,
+                link: mData.purl || mData.murl,
+                googleUrl: `https://www.google.com/imgres?imgurl=${encodeURIComponent(mData.murl)}`,
+                position: idx + 1
+              });
+            }
+          } catch (e) {}
+        });
+      }
+
+      responsePayload.images = images;
+    } 
+
+    // ==========================================
+    // 2. MODE: NEWS ONLY
+    // ==========================================
+    else if (searchType === 'news') {
+      const newsRes = await axios.get(`https://www.bing.com/news/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}`, { headers, timeout: 8000 });
+      const $ = cheerio.load(newsRes.data);
+      const news = [];
+
+      $('.news-card, .newsitem').slice(0, limit).each((idx, el) => {
+        const titleEl = $(el).find('a.title');
+        const title = titleEl.text().trim();
+        const link = decodeBingUrl(titleEl.attr('href'));
+        const source = $(el).find('.source, .provider').text().trim();
+        const snippet = $(el).find('.snippet, .caption').text().trim();
+        const date = $(el).find('span[aria-label], .time').text().trim();
+
+        if (title && link) {
+          news.push({ position: idx + 1, title, link, snippet, source, date });
+        }
+      });
+
+      responsePayload.news = news;
+    }
+
+    // ==========================================
+    // 3. MODE: SEARCH DEFAULT (Organik Only)
+    // ==========================================
+    else {
+      const webRes = await axios.get(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}`, { headers, timeout: 8000 });
+      const $ = cheerio.load(webRes.data);
+
+      const organic = [];
+      let instantAnswer = null;
+      const relatedSearches = [];
 
       const answerNode = $('.b_ans, .b_entityTP, .b_promowidget, .b_rich').first();
       if (answerNode.length) {
@@ -113,7 +191,7 @@ app.get('/api/search', async (req, res) => {
         if (title || snippet) instantAnswer = { title, snippet };
       }
 
-      $('#b_results .b_algo').each((_, element) => {
+      $('#b_results .b_algo').slice(0, limit).each((_, element) => {
         const titleEl = $(element).find('h2 a');
         const snippetEl = $(element).find('.b_caption p, .b_algoDesc, .b_lineclamp2');
 
@@ -130,8 +208,8 @@ app.get('/api/search', async (req, res) => {
         }
 
         if (title && directLink) {
-          organicResults.push({
-            position: organicResults.length + 1,
+          organic.push({
+            position: organic.length + 1,
             title,
             link: directLink,
             favicon,
@@ -140,57 +218,22 @@ app.get('/api/search', async (req, res) => {
         }
       });
 
-      $('.b_rs a, #b_results .b_vList li a, .b_ans .b_rs li a').each((_, el) => {
+      $('.b_rs a, #b_results .b_vList li a').each((_, el) => {
         const text = $(el).text().trim();
         if (text && !relatedSearches.includes(text)) relatedSearches.push(text);
       });
+
+      if (instantAnswer) responsePayload.instantAnswer = instantAnswer;
+      responsePayload.organic = organic;
+      responsePayload.relatedSearches = relatedSearches;
     }
 
-    const newsResults = [];
-    if (newsRes.status === 'fulfilled') {
-      const $news = cheerio.load(newsRes.value.data, { xmlMode: true });$news('item').slice(0, 5).each((_, el) => {
-        const title = $news(el).find('title').text().trim();
-        const link = $news(el).find('link').text().trim();
-        const pubDate = $news(el).find('pubDate').text().trim();
-        const source = $news(el).find('source').text().trim();
+    // Tambahkan Metrik Performa
+    responsePayload.credits = 1;
+    responsePayload.duration = `${Date.now() - startTime}ms`;
 
-        if (title && link) newsResults.push({ title, link, pubDate, source });
-      });
-    }
-
-    const imagesResults = [];
-    if (imgRes.status === 'fulfilled') {
-      const $img = cheerio.load(imgRes.value.data);$img('a.iusc').slice(0, 6).each((_, el) => {
-        try {
-          const mData = JSON.parse($(el).attr('m') || '{}');
-          if (mData.murl && mData.t) {
-            imagesResults.push({
-              title: mData.t,
-              image_url: mData.murl,
-              source_url: mData.purl
-            });
-          }
-        } catch (e) {}
-      });
-    }
-
-    const responseData = {
-      status: 'success',
-      query,
-      active_language: config.lang,
-      instant_answer: instantAnswer,
-      news: newsResults,
-      images: imagesResults,
-      total_organic: organicResults.length,
-      organic: organicResults,
-      related_searches: relatedSearches
-    };
-
-    if (organicResults.length > 0) {
-      myCache.set(cacheKey, responseData);
-    }
-
-    res.json({ ...responseData, cached: false });
+    myCache.set(cacheKey, responsePayload);
+    return res.json({ ...responsePayload, cached: false });
 
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
