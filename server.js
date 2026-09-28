@@ -40,7 +40,7 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
   const query = (reqQuery.q || '').trim();
   const words = query.split(/\s+/);
 
-  // 2. Kueri 1 kata netral (misal: "Minecraft") di-fallback ke Global (en-US)
+  // 2. Kueri 1 kata netral (misal: "Minecraft", "Indonesia") di-fallback ke Global (en-US)
   if (words.length === 1) {
     return { hl: 'en', gl: 'us', mkt: 'en-US' };
   }
@@ -61,10 +61,12 @@ function resolveLanguageConfig(reqQuery, acceptLanguageHeader) {
   return { hl: 'en', gl: 'us', mkt: 'en-US' };
 }
 
-// Handler Khusus Scraping Gambar dengan Ekstraksi Dimensi Lengkap
+// Handler Khusus Scraping Gambar dengan Ekstraksi Dimensi Multi-Source
 async function fetchImages(query, config, limit, headers) {
   const images = [];
-  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}`;
+  // Paksa Bing mengambil buffer data lebih banyak (minimal 20-50 item)
+  const fetchCount = Math.max(limit, 20);
+  const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&setmkt=${config.mkt}&setlang=${config.hl}&count=${fetchCount}&first=1`;
 
   const res = await axios.get(bingImgUrl, { headers, timeout: 8000 });
   const $ = cheerio.load(res.data);
@@ -82,6 +84,32 @@ async function fetchImages(query, config, limit, headers) {
 
       if (!imageUrl) return;
 
+      // 1. Ambil Dimensi Gambar Utama (Cari di mData dulu, jika null parse dari HTML data-dim / text badge)
+      let imageWidth = parseInt(mData.mw || mData.w, 10) || null;
+      let imageHeight = parseInt(mData.mh || mData.h, 10) || null;
+
+      if (!imageWidth || !imageHeight) {
+        const dimAttr = $(el).attr('data-dim') \vert{}\vert{}$(el).parent().find('.imgpt, .infobadge, .b_dataText').text();
+        if (dimAttr) {
+          const match = dimAttr.match(/(\d+)\s*[\|x×:]\s*(\d+)/i);
+          if (match) {
+            imageWidth = parseInt(match[1], 10);
+            imageHeight = parseInt(match[2], 10);
+          }
+        }
+      }
+
+      // 2. Ambil Dimensi Thumbnail (Cari di mData atau regex URL turl)
+      let thumbnailWidth = parseInt(mData.tw || mData.twid, 10) || null;
+      let thumbnailHeight = parseInt(mData.th || mData.thid, 10) || null;
+
+      if (mData.turl && (!thumbnailWidth || !thumbnailHeight)) {
+        const wMatch = mData.turl.match(/[?&]w=(\d+)/);
+        const hMatch = mData.turl.match(/[?&]h=(\d+)/);
+        if (wMatch) thumbnailWidth = parseInt(wMatch[1], 10);
+        if (hMatch) thumbnailHeight = parseInt(hMatch[2], 10);
+      }
+
       let domain = '';
       try {
         domain = new URL(targetLink).hostname;
@@ -92,11 +120,11 @@ async function fetchImages(query, config, limit, headers) {
       images.push({
         title: mData.t || query,
         imageUrl,
-        imageWidth: parseInt(mData.mw, 10) || parseInt(mData.w, 10) || null,
-        imageHeight: parseInt(mData.mh, 10) || parseInt(mData.h, 10) || null,
+        imageWidth,
+        imageHeight,
         thumbnailUrl: mData.turl || imageUrl,
-        thumbnailWidth: parseInt(mData.tw, 10) || null,
-        thumbnailHeight: parseInt(mData.th, 10) || null,
+        thumbnailWidth,
+        thumbnailHeight,
         source: domain ? domain.replace(/^www\./, '') : 'unknown',
         domain: domain || 'unknown',
         link: targetLink,
@@ -116,7 +144,10 @@ app.get('/api/search', async (req, res) => {
   const startTime = Date.now();
   const query = req.query.q;
   const searchType = (req.query.type || 'search').toLowerCase(); // 'search', 'images', atau 'news'
-  const limit = parseInt(req.query.num, 10) || 10;
+  
+  // Set default limit: Images = 20, Lainnya = 10
+  const defaultLimit = searchType === 'images' ? 20 : 10;
+  const limit = parseInt(req.query.num, 10) || defaultLimit;
 
   if (!query) {
     return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
