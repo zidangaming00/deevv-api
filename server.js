@@ -6,10 +6,10 @@ import NodeCache from 'node-cache';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Inisialisasi Cache dengan TTL 24 Jam (86400 detik)
+// Cache TTL 24 jam (86400 detik)
 const myCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 });
 
-// Helper Function: Decode URL Redirect Bing ke URL Domain Asli
+// Helper: Decode Bing Redirect URL
 function decodeBingUrl(bingUrl) {
   if (!bingUrl) return '';
   if (bingUrl.includes('&u=a1')) {
@@ -27,66 +27,67 @@ function decodeBingUrl(bingUrl) {
   return bingUrl;
 }
 
-// Endpoint Utama API Pencarian
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
 
   if (!query) {
     return res.status(400).json({
       status: 'error',
-      message: 'Parameter query "q" wajib diisi. Contoh: /api/search?q=minecraft'
+      message: 'Parameter "q" wajib diisi.'
     });
   }
 
   const cacheKey = query.toLowerCase().trim();
 
-  // 1. CEK CACHE: Jika kata kunci pernah dicari dalam 24 jam terakhir
+  // 1. Cek Cache
   const cachedData = myCache.get(cacheKey);
   if (cachedData) {
     return res.json({
       ...cachedData,
-      cached: true // Penanda bahwa data disajikan dari memori cache
+      cached: true
     });
   }
 
-  // 2. SCRAPING BING: Jika belum ada di cache
   try {
     const targetUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=id`;
     
+    // PERBAIKAN UTAMA: Paksa Desktop View dengan User-Agent & Cookie Khusus
     const response = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cookie': 'SRCHHPGUSR=PR=1; MUID=1234567890;' // Mencegah Bing me-redirect ke m.bing.com
       },
       timeout: 10000
     });
 
     const $ = cheerio.load(response.data);
 
-    // A. Instant Answer / Knowledge Card
+    // A. Instant Answer / Entity Panel
     let instantAnswer = null;
-    const answerNode = $('.b_ans, .b_entityTP, .b_promowidget').first();
+    const answerNode = $('.b_ans, .b_entityTP, .b_promowidget, .b_rich').first();
     if (answerNode.length) {
-      const title = answerNode.find('h2, .b_entityTitle').first().text().trim();
-      const snippet = answerNode.find('.b_caption, .b_entityDesc, .rwrl').first().text().trim();
+      const title = answerNode.find('h2, .b_entityTitle, .b_focusTextExtra').first().text().trim();
+      const snippet = answerNode.find('.b_caption, .b_entityDesc, .rwrl, .b_focusTextMedium').first().text().trim();
       if (title || snippet) {
         instantAnswer = { title, snippet };
       }
     }
 
-    // B. Related Videos
+    // B. Related Videos (Mencakup beberapa selector layout Bing)
     const videos = [];
-    $('.b_videolist .mc_vtvc, .b_vlist li, .vcard').each((_, el) => {
-      const vTitle = $(el).find('.mc_vtvc_title, .b_promtext, h8').text().trim();
+    $('.b_videolist .mc_vtvc, .b_vlist li, .vcard, .b_vidCard').each((_, el) => {
+      const vTitle = $(el).find('.mc_vtvc_title, .b_promtext, h8, .title').text().trim();
       const rawVLink = $(el).find('a').attr('href');
       const vLink = decodeBingUrl(rawVLink);
       
-      if (vTitle && vLink) {
+      if (vTitle && vLink && !videos.some(v => v.link === vLink)) {
         videos.push({ title: vTitle, link: vLink });
       }
     });
 
-    // C. Hasil Organik + Direct Link + Favicon
+    // C. Hasil Organik
     const organicResults = [];
     $('#b_results .b_algo').each((_, element) => {
       const titleEl = $(element).find('h2 a');
@@ -97,7 +98,6 @@ app.get('/api/search', async (req, res) => {
       const directLink = decodeBingUrl(rawLink);
       const snippet = snippetEl.text().trim();
 
-      // Dapatkan Favicon menggunakan domain asli
       let favicon = null;
       if (directLink) {
         try {
@@ -117,16 +117,15 @@ app.get('/api/search', async (req, res) => {
       }
     });
 
-    // D. Related Searches
+    // D. Related Searches (Mencakup selector Desktop + Mobile)
     const relatedSearches = [];
-    $('.b_rs a, #b_results .b_vList li a').each((_, el) => {
+    $('.b_rs a, #b_results .b_vList li a, .b_ans .b_rs li a, [data-tag="relatedsearch"] a').each((_, el) => {
       const text = $(el).text().trim();
-      if (text && !relatedSearches.includes(text)) {
+      if (text && !relatedSearches.includes(text) && !text.toLowerCase().includes('selengkapnya')) {
         relatedSearches.push(text);
       }
     });
 
-    // Format Response JSON
     const responseData = {
       status: 'success',
       source: 'bing',
@@ -138,8 +137,10 @@ app.get('/api/search', async (req, res) => {
       related_searches: relatedSearches
     };
 
-    // 3. SIMPAN KE CACHE: Simpan respon ini selama 24 jam
-    myCache.set(cacheKey, responseData);
+    // Simpan ke Cache 24 jam jika ada hasilnya
+    if (organicResults.length > 0) {
+      myCache.set(cacheKey, responseData);
+    }
 
     res.json({
       ...responseData,
@@ -147,20 +148,12 @@ app.get('/api/search', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Scraping Error:', error.message);
     res.status(500).json({
       status: 'error',
-      message: 'Gagal mengambil data dari Bing.',
+      message: 'Gagal melakukan scraping ke Bing.',
       error: error.message
     });
   }
 });
 
-// Root Endpoint
-app.get('/', (req, res) => {
-  res.send('API Aktif! Gunakan endpoint /api/search?q=kata_kunci');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
