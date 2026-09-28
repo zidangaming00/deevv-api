@@ -408,7 +408,7 @@ async function fetchNewsViaBing(query, config, limit, offset) {
         link,
         snippet: snippet || 'Tidak ada deskripsi.',
         publisher: publisher || domain || 'Berita',
-        domain: siteName,
+        domain,
         thumbnailUrl: thumbnail,
         publishedAt: metadataText || null,
         position: offset + newsItems.length + 1
