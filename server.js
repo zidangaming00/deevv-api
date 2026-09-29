@@ -475,6 +475,128 @@ async function fetchImages(query, config, limit, offset) {
 }
 
 // ==========================================
+// 2b. GAMBAR MIRIP SECARA VISUAL (Bing visual search via imgurl:)
+// Beda dengan cari-pakai-judul: ini mencari gambar yang ISINYA mirip
+// dengan gambar yang sedang dipreview.
+// ==========================================
+function buildSimilarAttempts(imageUrl, config, count) {
+  const q = encodeURIComponent(`imgurl:${imageUrl}`);
+  const common = `setmkt=${config.mkt}&setlang=${config.hl}&cc=${config.gl.toUpperCase()}`;
+  return [
+    {
+      name: 'sbi-page',
+      url: `https://www.bing.com/images/search?view=detailv2&iss=sbi&form=SBIHMP&sbisrc=UrlPaste&q=${q}&first=1&${common}`
+    },
+    {
+      name: 'sbi-async',
+      url: `https://www.bing.com/images/async?q=${q}&view=detailv2&iss=sbi&form=SBIHMP&sbisrc=UrlPaste&first=0&count=${count}&mmasync=1&${common}`
+    }
+  ];
+}
+
+async function runSimilarAttempt(attempt, imageUrl, limit, config) {
+  const res = await axios.get(attempt.url, {
+    headers: {
+      'User-Agent': getRandomUserAgent(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': `${config.mkt},${config.hl};q=0.9`,
+      'Referer': 'https://www.bing.com/images'
+    },
+    timeout: 10000
+  });
+  const html = typeof res.data === 'string' ? res.data : '';
+  if (looksBlocked(html)) throw new Error('BLOCKED_CAPTCHA: Visual search diblokir.');
+
+  const $ = cheerio.load(html);
+  // ambil lebih banyak dulu, lalu buang gambar sumber & duplikat
+  const all = parseBingImageCards($, limit + 10, 0, '');
+  const items = all
+    .filter(i => i.imageUrl !== imageUrl && i.thumbnailUrl !== imageUrl)
+    .slice(0, limit)
+    .map((it, idx) => ({ ...it, position: idx + 1 }));
+  return { items, status: res.status, htmlLength: html.length };
+}
+
+async function fetchSimilarImages(imageUrl, title, config, limit) {
+  const attempts = buildSimilarAttempts(imageUrl, config, Math.max(limit, 30));
+
+  for (const attempt of attempts) {
+    try {
+      const r = await runSimilarAttempt(attempt, imageUrl, limit, config);
+      console.log(`[SIMILAR] via ${attempt.name}: ${r.items.length} gambar`);
+      if (r.items.length >= 4) {
+        trackSource('bing-similar', true);
+        return { mode: 'visual', items: r.items };
+      }
+    } catch (err) {
+      console.warn(`[SIMILAR] Strategi "${attempt.name}" gagal: ${err.message}`);
+    }
+  }
+
+  // Cadangan: cari berdasarkan judul (hanya sama tema, bukan sama isi)
+  trackSource('bing-similar', false, 'visual search kosong, pakai fallback judul');
+  const cleanTitle = String(title || '').split(/\s+/).slice(0, 8).join(' ').trim();
+  if (!cleanTitle) return { mode: 'topic', items: [] };
+  try {
+    const items = await fetchImages(cleanTitle, config, limit + 5, 0);
+    return {
+      mode: 'topic',
+      items: items.filter(i => i.imageUrl !== imageUrl).slice(0, limit)
+    };
+  } catch (e) {
+    return { mode: 'topic', items: [] };
+  }
+}
+
+app.get('/api/similar', async (req, res) => {
+  const imageUrl = req.query.imgurl;
+  if (!imageUrl || !/^https?:\/\//i.test(imageUrl) || imageUrl.length > 2000) {
+    return res.status(400).json({ status: 'error', message: 'Parameter "imgurl" wajib berupa URL http(s).' });
+  }
+  const limit = Math.min(parseInt(req.query.num, 10) || 12, 30);
+  const title = req.query.q || '';
+  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const cacheKey = `similar_${imageUrl}_${limit}_${config.mkt}`;
+
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) return res.json(cached.data);
+
+  try {
+    const { mode, items } = await fetchSimilarImages(imageUrl, title, config, limit);
+    const payload = { status: 'success', mode, results: items, images: items };
+    if (mode === 'visual') cache.set(cacheKey, { timestamp: Date.now(), data: payload });
+    return res.json(payload);
+  } catch (error) {
+    console.error('[API ERROR] similar:', error.message);
+    return res.status(500).json({ status: 'error', message: 'Gagal memuat gambar terkait.', error_detail: error.message });
+  }
+});
+
+// Debug: /api/debug/similar?imgurl=https://...   (&key=... kalau DEBUG_KEY di-set)
+app.get('/api/debug/similar', async (req, res) => {
+  if (process.env.DEBUG_KEY && req.query.key !== process.env.DEBUG_KEY) {
+    return res.status(403).json({ status: 'error', message: 'Forbidden' });
+  }
+  const imageUrl = req.query.imgurl;
+  if (!imageUrl) return res.status(400).json({ status: 'error', message: 'Parameter "imgurl" wajib diisi.' });
+
+  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const report = [];
+  for (const attempt of buildSimilarAttempts(imageUrl, config, 30)) {
+    try {
+      const r = await runSimilarAttempt(attempt, imageUrl, 12, config);
+      report.push({
+        strategy: attempt.name, status: r.status, htmlLength: r.htmlLength,
+        count: r.items.length, sampleTitles: r.items.slice(0, 6).map(i => i.title)
+      });
+    } catch (err) {
+      report.push({ strategy: attempt.name, error: err.message });
+    }
+  }
+  res.json({ imageUrl, report });
+});
+
+// ==========================================
 // 3. SCRAPER BERITA — Bing News (primer) + Google RSS (fallback)
 // ==========================================
 function buildBingNewsCookies(config) {
