@@ -230,31 +230,55 @@ function parseBingImageCards($, limit, offset, query) {
   return images;
 }
 
+function buildImageAttempts(query, config, offset, fetchCount) {
+  const q = encodeURIComponent(query);
+  const markets = [
+    { mkt: config.mkt, hl: config.hl, cc: config.gl.toUpperCase() },
+    { mkt: 'en-US', hl: 'en', cc: 'US' }
+  ].filter((m, i, arr) => arr.findIndex(x => x.mkt === m.mkt) === i);
+
+  const attempts = [];
+  for (const m of markets) {
+    const common = `setmkt=${m.mkt}&setlang=${m.hl}&cc=${m.cc}`;
+    const acceptLang = `${m.mkt},${m.hl};q=0.9`;
+    attempts.push({
+      name: `async-${m.mkt}`,
+      acceptLang,
+      url: `https://www.bing.com/images/async?q=${q}&first=${offset}&count=${fetchCount}&mmasync=1&${common}`
+    });
+    attempts.push({
+      name: `page-${m.mkt}`,
+      acceptLang,
+      url: `https://www.bing.com/images/search?q=${q}&first=${offset > 0 ? offset + 1 : 1}&count=${fetchCount}&${common}`
+    });
+  }
+  return attempts;
+}
+
+async function runImageAttempt(attempt, query, limit, offset) {
+  const res = await axios.get(attempt.url, {
+    headers: {
+      'User-Agent': getRandomUserAgent(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': attempt.acceptLang,
+      'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`
+    },
+    timeout: 10000
+  });
+
+  const html = typeof res.data === 'string' ? res.data : '';
+  const blocked = looksBlocked(html);
+  const $ = cheerio.load(html);
+  const images = blocked ? [] : parseBingImageCards($, limit, offset, query);
+  const score = relevanceScore(images, query);
+
+  return { images, score, blocked, status: res.status, htmlLength: html.length };
+}
+
 async function fetchImages(query, config, limit, offset) {
   try {
     const fetchCount = Math.max(limit, 20);
-    const q = encodeURIComponent(query);
-    const common = `setmkt=${config.mkt}&setlang=${config.hl}&cc=${config.gl.toUpperCase()}`;
-
-    const baseHeaders = {
-      'User-Agent': getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-      'Referer': `https://www.bing.com/images/search?q=${q}`
-    };
-
-    const attempts = [
-      // 1) Endpoint async: hasil murni untuk query
-      {
-        name: 'async',
-        url: `https://www.bing.com/images/async?q=${q}&first=${offset}&count=${fetchCount}&mmasync=1&${common}`
-      },
-      // 2) Halaman penuh sebagai cadangan
-      {
-        name: 'page',
-        url: `https://www.bing.com/images/search?q=${q}&first=${offset > 0 ? offset + 1 : 1}&count=${fetchCount}&${common}`
-      }
-    ];
+    const attempts = buildImageAttempts(query, config, offset, fetchCount);
 
     let best = null;
     let bestScore = -1;
@@ -262,48 +286,33 @@ async function fetchImages(query, config, limit, offset) {
 
     for (const attempt of attempts) {
       try {
-        const res = await axios.get(attempt.url, { headers: baseHeaders, timeout: 10000 });
-        const html = res.data;
+        const r = await runImageAttempt(attempt, query, limit, offset);
 
-        if (looksBlocked(html)) {
-          throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
-        }
+        if (r.blocked) throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
+        if (r.images.length === 0) throw new Error(`EMPTY_RESULT: Strategi "${attempt.name}" tidak menemukan gambar.`);
 
-        const $ = cheerio.load(html);
-        const images = parseBingImageCards($, limit, offset, query);
+        console.log(`[IMAGES] "${query}" via ${attempt.name}: ${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`);
 
-        if (images.length === 0) {
-          throw new Error(`EMPTY_RESULT: Strategi "${attempt.name}" tidak menemukan gambar.`);
-        }
+        if (r.score > bestScore) { best = r.images; bestScore = r.score; }
 
-        const score = relevanceScore(images, query);
-        if (score > bestScore) {
-          best = images;
-          bestScore = score;
-        }
-
-        // Cukup relevan (minimal 20% hasil memuat kata dari query) -> pakai
-        if (score >= 0.2) {
+        if (r.score >= 0.2) {
           trackSource('bing-images', true);
-          return images;
+          return r.images;
         }
-
-        console.warn(`[IMAGES] Strategi "${attempt.name}" kurang relevan (skor ${score.toFixed(2)}) untuk "${query}", coba strategi lain...`);
       } catch (err) {
         lastErr = err;
         console.warn(`[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`);
       }
     }
 
-    // Semua strategi jalan tapi relevansi rendah -> tetap kembalikan yang terbaik,
-    // ditandai supaya tidak di-cache.
-    if (best) {
-      trackSource('bing-images', true);
-      best.lowRelevance = true;
-      return best;
+    // Hampir tidak ada yang nyambung -> jangan kirim sampah, kirim error jelas
+    if (!best || bestScore < 0.1) {
+      throw lastErr || new Error(`IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak berhubungan dengan "${query}" untuk semua strategi.`);
     }
 
-    throw lastErr || new Error('EMPTY_RESULT: Gagal mengekstrak gambar.');
+    trackSource('bing-images', true);
+    best.lowRelevance = true;
+    return best;
   } catch (err) {
     trackSource('bing-images', false, err.message);
     throw err;
@@ -584,6 +593,40 @@ app.get('/api/search', async (req, res) => {
       error_detail: error.message
     });
   }
+});
+
+// ==========================================
+// DEBUG: lihat apa yang sebenarnya dikembalikan Bing per strategi
+// Pakai: /api/debug/images?q=Prabowo   (tambah &key=... kalau DEBUG_KEY di-set)
+// ==========================================
+app.get('/api/debug/images', async (req, res) => {
+  if (process.env.DEBUG_KEY && req.query.key !== process.env.DEBUG_KEY) {
+    return res.status(403).json({ status: 'error', message: 'Forbidden' });
+  }
+  const query = req.query.q;
+  if (!query) return res.status(400).json({ status: 'error', message: 'Parameter "q" wajib diisi.' });
+
+  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
+  const attempts = buildImageAttempts(query, config, 0, 20);
+  const report = [];
+
+  for (const attempt of attempts) {
+    try {
+      const r = await runImageAttempt(attempt, query, 20, 0);
+      report.push({
+        strategy: attempt.name,
+        status: r.status,
+        htmlLength: r.htmlLength,
+        blocked: r.blocked,
+        count: r.images.length,
+        relevance: Number(r.score.toFixed(2)),
+        sampleTitles: r.images.slice(0, 5).map(i => i.title)
+      });
+    } catch (err) {
+      report.push({ strategy: attempt.name, error: err.message });
+    }
+  }
+  res.json({ query, report });
 });
 
 app.listen(PORT, () => {
