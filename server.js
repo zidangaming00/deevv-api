@@ -54,75 +54,47 @@ function extractImageFromHtml(htmlSnippet) {
 }
 
 // ==========================================
-// CIRCUIT BREAKER — mencegah sistem "keras kepala"
-// terus nyoba sumber yang lagi lumpuh
+// PEMANTAU SUMBER (tanpa blokir)
+// Hanya mencatat sukses/gagal untuk /api/health.
+// TIDAK PERNAH menolak request, jadi API tidak akan "mati sementara".
 // ==========================================
-class CircuitBreaker {
-  constructor(name, { failureThreshold = 3, cooldownMs = 5 * 60 * 1000 } = {}) {
-    this.name = name;
-    this.failureThreshold = failureThreshold;
-    this.cooldownMs = cooldownMs;
-    this.failureCount = 0;
-    this.openedAt = null; // kapan breaker "terbuka" (menolak request)
-  }
+const sourceStats = {};
 
-  isOpen() {
-    if (this.openedAt === null) return false;
-    // Kalau sudah lewat cooldown, coba lagi (half-open)
-    if (Date.now() - this.openedAt > this.cooldownMs) {
-      this.openedAt = null;
-      this.failureCount = 0;
-      return false;
+function trackSource(name, ok, errMsg = null) {
+  const s = sourceStats[name] || (sourceStats[name] = {
+    success: 0, failure: 0, consecutiveFailures: 0, lastError: null, lastSuccessAt: null, lastFailureAt: null
+  });
+  if (ok) {
+    s.success++;
+    s.consecutiveFailures = 0;
+    s.lastSuccessAt = new Date().toISOString();
+  } else {
+    s.failure++;
+    s.consecutiveFailures++;
+    s.lastError = errMsg;
+    s.lastFailureAt = new Date().toISOString();
+    if (s.consecutiveFailures === 3) {
+      alertEcosystem('WARN', `Sumber "${name}" gagal 3x berturut-turut`, { error: errMsg });
     }
-    return true;
-  }
-
-  recordSuccess() {
-    this.failureCount = 0;
-    this.openedAt = null;
-  }
-
-  recordFailure() {
-    this.failureCount++;
-    if (this.failureCount >= this.failureThreshold && this.openedAt === null) {
-      this.openedAt = Date.now();
-      console.error(`[CIRCUIT BREAKER] "${this.name}" DIBUKA — dianggap lumpuh selama ${this.cooldownMs / 1000}s ke depan. Gagal ${this.failureCount}x berturut-turut.`);
-    }
-  }
-
-  getStatus() {
-    return {
-      name: this.name,
-      state: this.isOpen() ? 'OPEN (lumpuh sementara)' : 'CLOSED (normal)',
-      consecutiveFailures: this.failureCount,
-      reopenAt: this.openedAt ? new Date(this.openedAt + this.cooldownMs).toISOString() : null
-    };
   }
 }
 
-const bingWebBreaker = new CircuitBreaker('bing-web');
-const bingImageBreaker = new CircuitBreaker('bing-images');
-const bingNewsBreaker = new CircuitBreaker('bing-news');
-const googleNewsRssBreaker = new CircuitBreaker('google-news-rss');
-
-// Log terstruktur biar gampang di-grep/monitor di Railway logs.
-// Kalau mau notifikasi aktif (Telegram/Discord webhook dll), panggil fungsi ini
-// dan tambahkan pengiriman HTTP ke webhook kamu di sini.
 function alertEcosystem(level, message, meta = {}) {
   const payload = { level, message, meta, timestamp: new Date().toISOString() };
   console.error(`[ALERT:${level}]`, JSON.stringify(payload));
   // TODO opsional: kirim ke webhook Discord/Telegram/Slack di sini
-  // axios.post(process.env.ALERT_WEBHOOK_URL, {...}).catch(() => {});
+}
+
+function looksBlocked(html) {
+  if (typeof html !== 'string') return false;
+  // 'verify' dihapus: kata itu sering muncul di halaman Bing normal (false positive)
+  return html.includes('geetest') || html.includes('cf-browser-verification');
 }
 
 // ==========================================
-// 1. SCRAPER WEB (Bing Search) — dengan circuit breaker
+// 1. SCRAPER WEB (Bing Search)
 // ==========================================
 async function fetchWebResults(query, config, limit, offset) {
-  if (bingWebBreaker.isOpen()) {
-    throw new Error('CIRCUIT_OPEN: Sumber web sedang di-cooldown karena gagal berulang.');
-  }
-
   try {
     const items = [];
     const firstIndex = offset > 0 ? offset + 1 : 1;
@@ -139,7 +111,7 @@ async function fetchWebResults(query, config, limit, offset) {
     });
 
     const html = res.data;
-    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+    if (looksBlocked(html)) {
       throw new Error('BLOCKED_CAPTCHA: Bing mendeteksi bot/minta verifikasi Captcha.');
     }
 
@@ -170,117 +142,170 @@ async function fetchWebResults(query, config, limit, offset) {
 
     if (items.length === 0) throw new Error('EMPTY_RESULT: Selector mungkin sudah berubah, 0 item ditemukan.');
 
-    bingWebBreaker.recordSuccess();
+    trackSource('bing-web', true);
     return items;
   } catch (err) {
-    bingWebBreaker.recordFailure();
-    if (bingWebBreaker.isOpen()) {
-      alertEcosystem('CRITICAL', 'Sumber web (Bing) kemungkinan lumpuh / HTML berubah', { error: err.message });
-    }
+    trackSource('bing-web', false, err.message);
     throw err;
   }
 }
 
 // ==========================================
-// FIX: Format Cookie Gambar (Bing butuh format id-ID, bukan cuma ID)
+// 2. SCRAPER GAMBAR (Bing Images) — FIX RELEVANSI
+//
+// Penyebab hasil gambar tidak nyambung dengan query:
+// - Request tidak membawa setmkt/setlang di URL, dan header Sec-Fetch-*
+//   + Cookie palsu bikin Bing menganggap request aneh lalu melempar
+//     ke halaman "Trending"/default (gambar yang sama untuk semua query).
+// - Halaman penuh /images/search juga memuat blok gambar rekomendasi
+//   selain hasil utama, dan paginasi lewat `first` di halaman penuh kurang stabil.
+//
+// Solusi:
+// - Pakai endpoint /images/async (fragmen HTML hasil murni, dipakai
+//   infinite scroll Bing sendiri) dengan setmkt/setlang di URL.
+// - Header dibuat sederhana seperti browser biasa, tanpa cookie palsu.
+// - Fallback ke halaman penuh kalau async gagal.
+// - Cek relevansi: kalau hasil tidak mengandung kata dari query sama
+//   sekali, dianggap kena halaman default dan dicoba strategi berikutnya.
 // ==========================================
-function buildBingImageCookies(config) {
-  const mkt = config.mkt || 'id-ID'; 
-  const lang = config.hl || 'id';
-  const region = (config.gl || 'id').toUpperCase();
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${mkt}&ui=${lang}; SRCHHPGUSR=SRCHLANG=${lang}&WNS=1;`;
+function queryTokens(query) {
+  return query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(t => t.length >= 3);
 }
 
-// ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) - FOKUS FIX ERROR
-// ==========================================
-async function fetchImages(query, config, limit, offset) {
-  if (bingImageBreaker.isOpen()) {
-    throw new Error('CIRCUIT_OPEN: Sumber gambar sedang di-cooldown karena gagal berulang.');
+function relevanceScore(images, query) {
+  const tokens = queryTokens(query);
+  if (tokens.length === 0 || images.length === 0) return 1; // tidak bisa dinilai
+  let hits = 0;
+  for (const img of images) {
+    const hay = `${img.title} ${img.pageUrl} ${img.imageUrl}`.toLowerCase();
+    if (tokens.some(t => hay.includes(t))) hits++;
   }
+  return hits / images.length;
+}
 
+function parseBingImageCards($, limit, offset, query) {
+  const images = [];
+  const seen = new Set();
+
+  $('a.iusc').each((_, el) => {
+    if (images.length >= limit) return false;
+    const mAttr = $(el).attr('m');
+    if (!mAttr) return;
+
+    try {
+      const mData = JSON.parse(mAttr);
+      const imageUrl = mData.murl;
+      const thumbnailUrl = mData.turl;
+      const title = mData.t || mData.desc || query;
+      const targetLink = mData.purl;
+
+      if (!imageUrl || !imageUrl.startsWith('http') || seen.has(imageUrl)) return;
+      seen.add(imageUrl);
+
+      let domain = '';
+      try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
+
+      images.push({
+        title: String(title).replace(/<[^>]+>/g, ''),
+        image: imageUrl,
+        imageUrl,
+        thumbnail: thumbnailUrl || imageUrl,
+        thumbnailUrl: thumbnailUrl || imageUrl,
+        width: mData.mw || 0,
+        height: mData.mh || 0,
+        imageWidth: mData.mw || 0,
+        imageHeight: mData.mh || 0,
+        source: domain || 'bing',
+        domain: domain || 'bing',
+        pageUrl: targetLink || imageUrl,
+        link: targetLink || imageUrl,
+        position: offset + images.length + 1
+      });
+    } catch (e) {}
+  });
+
+  return images;
+}
+
+async function fetchImages(query, config, limit, offset) {
   try {
-    const images = [];
-    const firstIndex = offset > 0 ? offset + 1 : 1;
     const fetchCount = Math.max(limit, 20);
+    const q = encodeURIComponent(query);
+    const common = `setmkt=${config.mkt}&setlang=${config.hl}&cc=${config.gl.toUpperCase()}`;
 
-    // FIX: Tambahkan parameter form=HDRSC2 agar klik dianggap natural
-    const bingImgUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=${firstIndex}&count=${fetchCount}`;
+    const baseHeaders = {
+      'User-Agent': getRandomUserAgent(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
+      'Referer': `https://www.bing.com/images/search?q=${q}`
+    };
 
-    const res = await axios.get(bingImgUrl, {
-      headers: {
-        'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
-        // FIX: Referer disamarkan dari halaman Web Search
-        'Referer': `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'Cookie': buildBingImageCookies(config) // Panggil fungsi cookie yang sudah diperbaiki
+    const attempts = [
+      // 1) Endpoint async: hasil murni untuk query
+      {
+        name: 'async',
+        url: `https://www.bing.com/images/async?q=${q}&first=${offset}&count=${fetchCount}&mmasync=1&${common}`
       },
-      timeout: 10000
-    });
-
-    const html = res.data;
-
-    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
-      throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
-    }
-
-    const $ = cheerio.load(html);
-
-    $('a.iusc').each((_, el) => {
-      if (images.length >= limit) return false;
-      const mAttr = $(el).attr('m');
-      if (mAttr) {
-        try {
-          const mData = JSON.parse(mAttr);
-          const imageUrl = mData.murl;
-          const thumbnailUrl = mData.turl;
-          const title = mData.t || mData.desc || query;
-          const targetLink = mData.purl;
-
-          if (imageUrl && imageUrl.startsWith('http')) {
-            let domain = '';
-            try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
-
-            images.push({
-              title: title.replace(/<[^>]+>/g, ''),
-              image: imageUrl,
-              imageUrl,
-              thumbnail: thumbnailUrl || imageUrl,
-              thumbnailUrl: thumbnailUrl || imageUrl,
-              width: mData.mw || 0,
-              height: mData.mh || 0,
-              imageWidth: mData.mw || 0,
-              imageHeight: mData.mh || 0,
-              source: domain || 'bing',
-              domain: domain || 'bing',
-              pageUrl: targetLink || imageUrl,
-              link: targetLink || imageUrl,
-              position: offset + images.length + 1
-            });
-          }
-        } catch (e) {}
+      // 2) Halaman penuh sebagai cadangan
+      {
+        name: 'page',
+        url: `https://www.bing.com/images/search?q=${q}&first=${offset > 0 ? offset + 1 : 1}&count=${fetchCount}&${common}`
       }
-    });
+    ];
 
-    if (images.length === 0) {
-      throw new Error('EMPTY_RESULT: Gagal mengekstrak gambar, kemungkinan dilempar ke halaman Trending karena deteksi bot.');
+    let best = null;
+    let bestScore = -1;
+    let lastErr = null;
+
+    for (const attempt of attempts) {
+      try {
+        const res = await axios.get(attempt.url, { headers: baseHeaders, timeout: 10000 });
+        const html = res.data;
+
+        if (looksBlocked(html)) {
+          throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
+        }
+
+        const $ = cheerio.load(html);
+        const images = parseBingImageCards($, limit, offset, query);
+
+        if (images.length === 0) {
+          throw new Error(`EMPTY_RESULT: Strategi "${attempt.name}" tidak menemukan gambar.`);
+        }
+
+        const score = relevanceScore(images, query);
+        if (score > bestScore) {
+          best = images;
+          bestScore = score;
+        }
+
+        // Cukup relevan (minimal 20% hasil memuat kata dari query) -> pakai
+        if (score >= 0.2) {
+          trackSource('bing-images', true);
+          return images;
+        }
+
+        console.warn(`[IMAGES] Strategi "${attempt.name}" kurang relevan (skor ${score.toFixed(2)}) untuk "${query}", coba strategi lain...`);
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`);
+      }
     }
 
-    bingImageBreaker.recordSuccess();
-    return images;
+    // Semua strategi jalan tapi relevansi rendah -> tetap kembalikan yang terbaik,
+    // ditandai supaya tidak di-cache.
+    if (best) {
+      trackSource('bing-images', true);
+      best.lowRelevance = true;
+      return best;
+    }
+
+    throw lastErr || new Error('EMPTY_RESULT: Gagal mengekstrak gambar.');
   } catch (err) {
-    bingImageBreaker.recordFailure();
-    if (bingImageBreaker.isOpen()) {
-      alertEcosystem('CRITICAL', 'Sumber gambar (Bing) lumpuh', { error: err.message, query });
-    }
+    trackSource('bing-images', false, err.message);
     throw err;
   }
 }
@@ -288,70 +313,17 @@ async function fetchImages(query, config, limit, offset) {
 // ==========================================
 // 3. SCRAPER BERITA — Bing News (primer) + Google RSS (fallback)
 // ==========================================
-
-// Beberapa strategi selector berurutan untuk tiap elemen.
-// Kalau Bing ubah 1 class, strategi berikutnya di array ini yang dicoba.
-const NEWS_CARD_SELECTORS = ['div.news-card', 'div.t_s', '.newsitem', 'div[class*="news-card"]'];
-
-function tryFindNewsCards($) {
-  for (const sel of NEWS_CARD_SELECTORS) {
-    const found = $(sel);
-    if (found.length > 0) return found;
-  }
-  return $(); // kosong kalau semua strategi gagal
-}
-
-function extractTitleAndLink($, el) {
-  const strategies = ['a.title', 'a[href].title', '.title a', 'a'];
-  for (const sel of strategies) {
-    const cand = $(el).find(sel).first();
-    const t = cand.text().trim();
-    const l = cand.attr('href');
-    if (t && l && l.startsWith('http')) return { title: t, link: l };
-  }
-  return { title: '', link: '' };
-}
-
-function extractThumbnail($, el) {
-  const strategies = [
-    () => $(el).find('img.rms_img').first().attr('src'),
-    () => $(el).find('.imgpr img').first().attr('src'),
-    () => $(el).find('img').first().attr('data-src'),
-    () => $(el).find('img').first().attr('src')
-  ];
-  for (const strat of strategies) {
-    let src = strat();
-    if (src) {
-      if (src.startsWith('//')) src = `https:${src}`;
-      if (src.startsWith('http')) return src;
-    }
-  }
-  return null;
-}
-
-// ==========================================
-// 3. SCRAPER BERITA — Bing News (selector asli, terverifikasi dari
-//    struktur endpoint infinitescrollajax milik Bing sendiri)
-// ==========================================
-
 function buildBingNewsCookies(config) {
-  // Format cookie ini yang bikin Bing benar-benar mengembalikan
-  // markup 'newsitem' lengkap dengan thumbnail sesuai market/bahasa.
   const region = config.gl.toUpperCase();
   const lang = config.hl;
   return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}`;
 }
 
 async function fetchNewsViaBing(query, config, limit, offset) {
-  if (bingNewsBreaker.isOpen()) {
-    throw new Error('CIRCUIT_OPEN: Sumber berita Bing sedang di-cooldown.');
-  }
-
   try {
     const newsItems = [];
     const first = offset > 0 ? offset + 1 : 1;
 
-    // Endpoint AJAX asli Bing News — bukan /news/search biasa
     const bingNewsUrl = `https://www.bing.com/news/infinitescrollajax?q=${encodeURIComponent(query)}&InfiniteScroll=1&first=${first}`;
 
     const res = await axios.get(bingNewsUrl, {
@@ -360,24 +332,21 @@ async function fetchNewsViaBing(query, config, limit, offset) {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`,
         'Referer': 'https://www.bing.com/news',
-        'Cookie': buildBingNewsCookies(config)   // <-- kunci yang tadinya hilang
+        'Cookie': buildBingNewsCookies(config)
       },
       timeout: 9000
     });
 
     const html = res.data;
-    if (html.includes('geetest') || html.includes('verify') || html.includes('cf-browser-verification')) {
+    if (looksBlocked(html)) {
       throw new Error('BLOCKED_CAPTCHA: Bing News mendeteksi bot/minta verifikasi Captcha.');
     }
 
     const $ = cheerio.load(html);
 
-    // Selector utama — sesuai struktur asli Bing (class mengandung "newsitem")
     let cards = $('div[class*="newsitem"]');
-
-    // Fallback kalau Bing sedikit ubah nama class tapi struktur intinya sama
     if (cards.length === 0) {
-      cards = $('[url][class*="news"]'); // elemen apapun yang punya atribut url + class news
+      cards = $('[url][class*="news"]');
     }
 
     cards.each((_, el) => {
@@ -385,27 +354,23 @@ async function fetchNewsViaBing(query, config, limit, offset) {
 
       const $el = $(el);
 
-      // URL ada di ATRIBUT elemen, bukan di dalam <a href>
       const link = $el.attr('url') || $el.find('a.title').first().attr('href');
       const title = $el.find('.caption a.title, a.title').first().text().trim();
 
-      if (!title || !link || !link.startsWith('http')) return; // skip item cacat
+      if (!title || !link || !link.startsWith('http')) return;
 
       const snippet = $el.find('.snippet').first().text().trim();
 
-      // Metadata source biasanya berisi "Nama Media · 2 jam lalu"
       const sourceSpans = $el.find('.source span');
       const metadataText = sourceSpans.map((i, s) => $(s).text().trim()).get().join(' · ');
       const publisher = sourceSpans.first().text().trim();
 
-      // Thumbnail: src ada di dalam a.imagelink img, formatnya path relatif
       let thumbnail = null;
       const imgSrc = $el.find('a.imagelink img').first().attr('src');
       if (imgSrc) {
         if (imgSrc.startsWith('http')) {
           thumbnail = imgSrc;
         } else {
-          // gabungkan dengan domain Bing, hindari double-slash
           thumbnail = `https://www.bing.com${imgSrc.startsWith('/') ? '' : '/'}${imgSrc}`;
         }
       }
@@ -427,21 +392,15 @@ async function fetchNewsViaBing(query, config, limit, offset) {
 
     if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Struktur newsitem tidak ditemukan, kemungkinan Bing ubah markup lagi.');
 
-    bingNewsBreaker.recordSuccess();
+    trackSource('bing-news', true);
     return newsItems;
   } catch (err) {
-    bingNewsBreaker.recordFailure();
-    if (bingNewsBreaker.isOpen()) {
-      alertEcosystem('CRITICAL', 'Sumber berita Bing kemungkinan lumpuh / HTML berubah', { error: err.message });
-    }
+    trackSource('bing-news', false, err.message);
     throw err;
   }
 }
-async function fetchNewsViaGoogleRss(query, config, limit, offset) {
-  if (googleNewsRssBreaker.isOpen()) {
-    throw new Error('CIRCUIT_OPEN: Fallback Google News RSS sedang di-cooldown.');
-  }
 
+async function fetchNewsViaGoogleRss(query, config, limit, offset) {
   try {
     const newsItems = [];
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${config.hl}-${config.gl.toUpperCase()}&gl=${config.gl.toUpperCase()}&ceid=${config.gl.toUpperCase()}:${config.hl}`;
@@ -454,7 +413,7 @@ async function fetchNewsViaGoogleRss(query, config, limit, offset) {
 
     for (let i = 0; i < pagedItems.length; i++) {
       const item = pagedItems[i];
-      if (!item.title || !item.link) continue; // skip item cacat
+      if (!item.title || !item.link) continue;
 
       let thumbnail = null;
       if (item.mediaThumbnail?.$?.url) thumbnail = item.mediaThumbnail.$.url;
@@ -471,32 +430,27 @@ async function fetchNewsViaGoogleRss(query, config, limit, offset) {
 
       newsItems.push({
         title: item.title.replace(/ - [^-]+$/, ''),
-        link: item.link, // catatan: ini masih URL redirect Google, bukan URL asli situs
+        link: item.link,
         snippet: cleanSnippet.trim(),
         publisher: sourceName,
         domain,
-        thumbnailUrl: thumbnail, // biasanya null, RSS jarang punya gambar
+        thumbnailUrl: thumbnail,
         publishedAt: item.pubDate || item.isoDate || null,
         position: offset + newsItems.length + 1,
-        _isFallbackSource: true // penanda internal: dari fallback, bukan sumber utama
+        _isFallbackSource: true
       });
     }
 
     if (newsItems.length === 0) throw new Error('EMPTY_RESULT: Semua item RSS cacat/kosong setelah filter.');
 
-    googleNewsRssBreaker.recordSuccess();
+    trackSource('google-news-rss', true);
     return newsItems;
   } catch (err) {
-    googleNewsRssBreaker.recordFailure();
-    if (googleNewsRssBreaker.isOpen()) {
-      alertEcosystem('CRITICAL', 'Fallback Google News RSS JUGA lumpuh — semua sumber berita down!', { error: err.message });
-    }
+    trackSource('google-news-rss', false, err.message);
     throw err;
   }
 }
 
-// Orkestrator: coba Bing dulu, kalau gagal baru Google RSS.
-// Kalau DUA-DUANYA gagal, baru API return error ke client (bukan diam-diam kosong).
 async function fetchNews(query, config, limit, offset) {
   try {
     return await fetchNewsViaBing(query, config, limit, offset);
@@ -505,7 +459,6 @@ async function fetchNews(query, config, limit, offset) {
     try {
       return await fetchNewsViaGoogleRss(query, config, limit, offset);
     } catch (rssErr) {
-      // Dua-duanya gagal — ini yang benar-benar harus diketahui ekosistem kamu
       alertEcosystem('FATAL', 'Semua sumber berita (Bing + Google RSS) gagal total', {
         bingError: bingErr.message,
         rssError: rssErr.message,
@@ -517,16 +470,12 @@ async function fetchNews(query, config, limit, offset) {
 }
 
 // ==========================================
-// HEALTH CHECK — supaya kamu tahu duluan, bukan user
+// HEALTH CHECK — hanya informasi, selalu 200
 // ==========================================
 app.get('/api/health', (req, res) => {
-  const breakers = [bingWebBreaker, bingImageBreaker, bingNewsBreaker, googleNewsRssBreaker];
-  const statuses = breakers.map(b => b.getStatus());
-  const anyOpen = statuses.some(s => s.state.startsWith('OPEN'));
-
-  res.status(anyOpen ? 503 : 200).json({
-    status: anyOpen ? 'degraded' : 'healthy',
-    breakers: statuses,
+  res.status(200).json({
+    status: 'ok',
+    sources: sourceStats,
     timestamp: new Date().toISOString()
   });
 });
@@ -563,6 +512,7 @@ app.get('/api/search', async (req, res) => {
     if (Date.now() - cachedData.timestamp < CACHE_TTL) {
       return res.json(cachedData.data);
     }
+    cache.delete(cacheKey);
   }
 
   try {
@@ -602,7 +552,10 @@ app.get('/api/search', async (req, res) => {
       news: searchType === 'news' ? results : undefined
     };
 
-    cache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
+    // Jangan cache hasil gambar yang relevansinya rendah
+    if (!results.lowRelevance) {
+      cache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
+    }
     return res.json(responsePayload);
 
   } catch (error) {
@@ -611,12 +564,9 @@ app.get('/api/search', async (req, res) => {
     let statusCode = 500;
     let customMessage = 'Terjadi kesalahan pada server backend.';
 
-    if (error.message.startsWith('CIRCUIT_OPEN')) {
-      statusCode = 503;
-      customMessage = 'Sumber data sedang dalam mode pemulihan otomatis (circuit breaker). Coba lagi dalam beberapa menit.';
-    } else if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
+    if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
       statusCode = 502;
-      customMessage = 'Semua sumber berita (primer & fallback) gagal. Tim sudah diberi notifikasi otomatis.';
+      customMessage = 'Semua sumber berita (primer & fallback) gagal.';
     } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
       statusCode = 504;
       customMessage = 'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat/terputus.';
