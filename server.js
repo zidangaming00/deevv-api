@@ -92,6 +92,161 @@ function looksBlocked(html) {
 }
 
 // ==========================================
+// PENYELESAI LINK REDIRECT (Bing / Google) — berlapis, tahan perubahan
+//
+// Lapis 1: decode dari parameter URL (u, url, r, q, ...). Base64 dicoba
+//          dengan beberapa panjang prefix, jadi tidak rusak kalau Bing
+//          ganti "a1" jadi prefix lain.
+// Lapis 2: ikuti redirect HTTP manual (Location / meta refresh / JS),
+//          berhenti begitu ketemu domain non-mesin-pencari (target tidak diunduh).
+// Lapis 3: kalau tetap gagal, link asli dipertahankan + linkResolved:false,
+//          API tidak pernah error gara-gara ini.
+// ==========================================
+const REDIRECT_PARAMS = ['u', 'url', 'r', 'q', 'target', 'redirect', 'redirecturl', 'ru', 'dest', 'destination'];
+const linkCache = new Map();
+const LINK_CACHE_MAX = 5000;
+
+function hostOf(u) {
+  try { return new URL(u).hostname.toLowerCase(); } catch (e) { return ''; }
+}
+
+function isSearchEngineUrl(u) {
+  const h = hostOf(u);
+  return h === 'bing.com' || h.endsWith('.bing.com') ||
+         h === 'news.google.com' || h === 'google.com' || h === 'www.google.com';
+}
+
+function decodeBase64Url(str) {
+  try {
+    let s = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return Buffer.from(s, 'base64').toString('utf8');
+  } catch (e) { return null; }
+}
+
+// Bing: u=a1aHR0cHM6Ly9... -> buang prefix (0-3 karakter) lalu base64url decode
+function decodeBingParam(val) {
+  if (!val) return null;
+  if (/^https?:\/\//i.test(val)) return val;
+  for (let k = 0; k <= 3; k++) {
+    const out = decodeBase64Url(val.slice(k));
+    if (out && /^https?:\/\/[^\s]+$/i.test(out)) return out;
+  }
+  return null;
+}
+
+// Google News lama: ID artikel = base64 yang memuat URL asli. Format baru tidak bisa di-decode lokal.
+function decodeGoogleNewsArticle(link) {
+  try {
+    const m = new URL(link).pathname.match(/\/articles\/([^/?]+)/);
+    if (!m) return null;
+    const raw = Buffer.from(m[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('latin1');
+    const found = raw.match(/https?:\/\/[\x21-\x7e]+/);
+    return found ? found[0] : null;
+  } catch (e) { return null; }
+}
+
+function resolveByParams(link) {
+  let current = link;
+  for (let hop = 0; hop < 4; hop++) {
+    if (!isSearchEngineUrl(current)) return current;
+
+    let next = null;
+    try {
+      const u = new URL(current);
+      if (u.hostname === 'news.google.com') {
+        next = decodeGoogleNewsArticle(current);
+      }
+      if (!next) {
+        for (const p of REDIRECT_PARAMS) {
+          const v = u.searchParams.get(p);
+          const decoded = decodeBingParam(v);
+          if (decoded && decoded !== current) { next = decoded; break; }
+        }
+      }
+    } catch (e) { return current; }
+
+    if (!next) return current;
+    current = next;
+  }
+  return current;
+}
+
+async function resolveByHttp(link) {
+  let current = link;
+  for (let hop = 0; hop < 5; hop++) {
+    if (!isSearchEngineUrl(current)) return current;
+    try {
+      const res = await axios.get(current, {
+        headers: { 'User-Agent': getRandomUserAgent(), 'Accept': 'text/html,*/*;q=0.8' },
+        timeout: 4000,
+        maxRedirects: 0,
+        responseType: 'text',
+        maxContentLength: 512 * 1024,
+        validateStatus: s => s < 400
+      });
+
+      if (res.status >= 300 && res.headers.location) {
+        current = new URL(res.headers.location, current).toString();
+        continue;
+      }
+
+      const html = typeof res.data === 'string' ? res.data : '';
+      const m =
+        html.match(/http-equiv=["']refresh["'][^>]*url=([^"'>\s]+)/i) ||
+        html.match(/\bvar\s+u\s*=\s*["'](https?:[^"']+)["']/i) ||
+        html.match(/window\.location(?:\.href)?\s*=\s*["'](https?:[^"']+)["']/i);
+      if (!m) return null;
+
+      const next = m[1].replace(/&amp;/g, '&').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+      current = new URL(next, current).toString();
+    } catch (e) {
+      // Bing kadang balas redirect sebagai "error" saat maxRedirects=0
+      const loc = e.response?.headers?.location;
+      if (loc) { current = new URL(loc, current).toString(); continue; }
+      return null;
+    }
+  }
+  return isSearchEngineUrl(current) ? null : current;
+}
+
+async function resolveLink(link) {
+  if (!link || !/^https?:\/\//i.test(link)) return { link, resolved: false };
+  if (!isSearchEngineUrl(link)) return { link, resolved: true };
+  if (linkCache.has(link)) return linkCache.get(link);
+
+  let finalUrl = resolveByParams(link);
+  if (isSearchEngineUrl(finalUrl)) {
+    const viaHttp = await resolveByHttp(finalUrl);
+    if (viaHttp) finalUrl = viaHttp;
+  }
+
+  const result = { link: finalUrl, resolved: !isSearchEngineUrl(finalUrl) };
+  if (linkCache.size >= LINK_CACHE_MAX) linkCache.delete(linkCache.keys().next().value);
+  linkCache.set(link, result);
+  return result;
+}
+
+async function finalizeLinks(items, concurrency = 5) {
+  const out = items;
+  for (let i = 0; i < out.length; i += concurrency) {
+    const chunk = out.slice(i, i + concurrency);
+    await Promise.all(chunk.map(async (item) => {
+      const original = item.link;
+      const r = await resolveLink(original);
+      item.link = r.link;
+      item.linkResolved = r.resolved;
+      if (r.link !== original) {
+        try { item.domain = new URL(r.link).hostname.replace(/^www\./, ''); } catch (e) {}
+      }
+    }));
+  }
+  const failed = out.filter(i => i.linkResolved === false).length;
+  if (failed > 0) console.warn(`[LINKS] ${failed}/${out.length} link belum bisa di-resolve (masih redirect mesin pencari)`);
+  return out;
+}
+
+// ==========================================
 // 1. SCRAPER WEB (Bing Search)
 // ==========================================
 async function fetchWebResults(query, config, limit, offset) {
@@ -533,6 +688,10 @@ app.get('/api/search', async (req, res) => {
       results = await fetchNews(query, config, limit, offset);
     } else {
       results = await fetchWebResults(query, config, limit, offset);
+    }
+
+    if (searchType !== 'images' && results.length > 0) {
+      results = await finalizeLinks(results);
     }
 
     if (results.length === 0) {
