@@ -398,11 +398,13 @@ function buildImageAttempts(query, config, offset, fetchCount) {
     const acceptLang = `${m.mkt},${m.hl};q=0.9`;
     attempts.push({
       name: `async-${m.mkt}`,
+      market: m.mkt,
       acceptLang,
       url: `https://www.bing.com/images/async?q=${q}&first=${offset}&count=${fetchCount}&mmasync=1&${common}`
     });
     attempts.push({
       name: `page-${m.mkt}`,
+      market: m.mkt,
       acceptLang,
       url: `https://www.bing.com/images/search?q=${q}&first=${offset > 0 ? offset + 1 : 1}&count=${fetchCount}&${common}`
     });
@@ -426,8 +428,9 @@ async function runImageAttempt(attempt, query, limit, offset) {
   const $ = cheerio.load(html);
   const images = blocked ? [] : parseBingImageCards($, limit, offset, query);
   const score = relevanceScore(images, query);
+  const pageTitle = ($('title').first().text() || '').trim().slice(0, 80);
 
-  return { images, score, blocked, status: res.status, htmlLength: html.length };
+  return { images, score, blocked, status: res.status, htmlLength: html.length, pageTitle };
 }
 
 async function fetchImages(query, config, limit, offset) {
@@ -437,15 +440,23 @@ async function fetchImages(query, config, limit, offset) {
 
     let best = null;
     let bestScore = -1;
-    let lastErr = null;
+    let anyImages = false;
+    const errors = [];
 
     for (const attempt of attempts) {
+      // Market utama tidak memberi gambar sama sekali -> kemungkinan Bing sedang
+      // membatasi IP server. Jangan tambah beban dengan mencoba market lain.
+      if (attempt.market !== config.mkt && !anyImages) break;
+
       try {
         const r = await runImageAttempt(attempt, query, limit, offset);
 
-        if (r.blocked) throw new Error('BLOCKED_CAPTCHA: Request Gambar diblokir oleh sistem verifikasi Bing.');
-        if (r.images.length === 0) throw new Error(`EMPTY_RESULT: Strategi "${attempt.name}" tidak menemukan gambar.`);
+        if (r.blocked) throw new Error(`BLOCKED_CAPTCHA (${attempt.name})`);
+        if (r.images.length === 0) {
+          throw new Error(`EMPTY (${attempt.name}, html ${r.htmlLength}B, title "${r.pageTitle}")`);
+        }
 
+        anyImages = true;
         console.log(`[IMAGES] "${query}" via ${attempt.name}: ${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`);
 
         if (r.score > bestScore) { best = r.images; bestScore = r.score; }
@@ -455,14 +466,16 @@ async function fetchImages(query, config, limit, offset) {
           return r.images;
         }
       } catch (err) {
-        lastErr = err;
+        errors.push(err.message);
         console.warn(`[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`);
       }
     }
 
-    // Hampir tidak ada yang nyambung -> jangan kirim sampah, kirim error jelas
-    if (!best || bestScore < 0.1) {
-      throw lastErr || new Error(`IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak berhubungan dengan "${query}" untuk semua strategi.`);
+    if (best && bestScore < 0.1) {
+      throw new Error(`IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak berhubungan dengan "${query}".`);
+    }
+    if (!best) {
+      throw new Error(`ALL_IMAGE_STRATEGIES_FAILED: ${errors.join(' | ')}`);
     }
 
     trackSource('bing-images', true);
@@ -473,128 +486,6 @@ async function fetchImages(query, config, limit, offset) {
     throw err;
   }
 }
-
-// ==========================================
-// 2b. GAMBAR MIRIP SECARA VISUAL (Bing visual search via imgurl:)
-// Beda dengan cari-pakai-judul: ini mencari gambar yang ISINYA mirip
-// dengan gambar yang sedang dipreview.
-// ==========================================
-function buildSimilarAttempts(imageUrl, config, count) {
-  const q = encodeURIComponent(`imgurl:${imageUrl}`);
-  const common = `setmkt=${config.mkt}&setlang=${config.hl}&cc=${config.gl.toUpperCase()}`;
-  return [
-    {
-      name: 'sbi-page',
-      url: `https://www.bing.com/images/search?view=detailv2&iss=sbi&form=SBIHMP&sbisrc=UrlPaste&q=${q}&first=1&${common}`
-    },
-    {
-      name: 'sbi-async',
-      url: `https://www.bing.com/images/async?q=${q}&view=detailv2&iss=sbi&form=SBIHMP&sbisrc=UrlPaste&first=0&count=${count}&mmasync=1&${common}`
-    }
-  ];
-}
-
-async function runSimilarAttempt(attempt, imageUrl, limit, config) {
-  const res = await axios.get(attempt.url, {
-    headers: {
-      'User-Agent': getRandomUserAgent(),
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': `${config.mkt},${config.hl};q=0.9`,
-      'Referer': 'https://www.bing.com/images'
-    },
-    timeout: 10000
-  });
-  const html = typeof res.data === 'string' ? res.data : '';
-  if (looksBlocked(html)) throw new Error('BLOCKED_CAPTCHA: Visual search diblokir.');
-
-  const $ = cheerio.load(html);
-  // ambil lebih banyak dulu, lalu buang gambar sumber & duplikat
-  const all = parseBingImageCards($, limit + 10, 0, '');
-  const items = all
-    .filter(i => i.imageUrl !== imageUrl && i.thumbnailUrl !== imageUrl)
-    .slice(0, limit)
-    .map((it, idx) => ({ ...it, position: idx + 1 }));
-  return { items, status: res.status, htmlLength: html.length };
-}
-
-async function fetchSimilarImages(imageUrl, title, config, limit) {
-  const attempts = buildSimilarAttempts(imageUrl, config, Math.max(limit, 30));
-
-  for (const attempt of attempts) {
-    try {
-      const r = await runSimilarAttempt(attempt, imageUrl, limit, config);
-      console.log(`[SIMILAR] via ${attempt.name}: ${r.items.length} gambar`);
-      if (r.items.length >= 4) {
-        trackSource('bing-similar', true);
-        return { mode: 'visual', items: r.items };
-      }
-    } catch (err) {
-      console.warn(`[SIMILAR] Strategi "${attempt.name}" gagal: ${err.message}`);
-    }
-  }
-
-  // Cadangan: cari berdasarkan judul (hanya sama tema, bukan sama isi)
-  trackSource('bing-similar', false, 'visual search kosong, pakai fallback judul');
-  const cleanTitle = String(title || '').split(/\s+/).slice(0, 8).join(' ').trim();
-  if (!cleanTitle) return { mode: 'topic', items: [] };
-  try {
-    const items = await fetchImages(cleanTitle, config, limit + 5, 0);
-    return {
-      mode: 'topic',
-      items: items.filter(i => i.imageUrl !== imageUrl).slice(0, limit)
-    };
-  } catch (e) {
-    return { mode: 'topic', items: [] };
-  }
-}
-
-app.get('/api/similar', async (req, res) => {
-  const imageUrl = req.query.imgurl;
-  if (!imageUrl || !/^https?:\/\//i.test(imageUrl) || imageUrl.length > 2000) {
-    return res.status(400).json({ status: 'error', message: 'Parameter "imgurl" wajib berupa URL http(s).' });
-  }
-  const limit = Math.min(parseInt(req.query.num, 10) || 12, 30);
-  const title = req.query.q || '';
-  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
-  const cacheKey = `similar_${imageUrl}_${limit}_${config.mkt}`;
-
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) return res.json(cached.data);
-
-  try {
-    const { mode, items } = await fetchSimilarImages(imageUrl, title, config, limit);
-    const payload = { status: 'success', mode, results: items, images: items };
-    if (mode === 'visual') cache.set(cacheKey, { timestamp: Date.now(), data: payload });
-    return res.json(payload);
-  } catch (error) {
-    console.error('[API ERROR] similar:', error.message);
-    return res.status(500).json({ status: 'error', message: 'Gagal memuat gambar terkait.', error_detail: error.message });
-  }
-});
-
-// Debug: /api/debug/similar?imgurl=https://...   (&key=... kalau DEBUG_KEY di-set)
-app.get('/api/debug/similar', async (req, res) => {
-  if (process.env.DEBUG_KEY && req.query.key !== process.env.DEBUG_KEY) {
-    return res.status(403).json({ status: 'error', message: 'Forbidden' });
-  }
-  const imageUrl = req.query.imgurl;
-  if (!imageUrl) return res.status(400).json({ status: 'error', message: 'Parameter "imgurl" wajib diisi.' });
-
-  const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
-  const report = [];
-  for (const attempt of buildSimilarAttempts(imageUrl, config, 30)) {
-    try {
-      const r = await runSimilarAttempt(attempt, imageUrl, 12, config);
-      report.push({
-        strategy: attempt.name, status: r.status, htmlLength: r.htmlLength,
-        count: r.items.length, sampleTitles: r.items.slice(0, 6).map(i => i.title)
-      });
-    } catch (err) {
-      report.push({ strategy: attempt.name, error: err.message });
-    }
-  }
-  res.json({ imageUrl, report });
-});
 
 // ==========================================
 // 3. SCRAPER BERITA — Bing News (primer) + Google RSS (fallback)
@@ -793,12 +684,9 @@ app.get('/api/search', async (req, res) => {
   const config = resolveLanguageConfig(req.query, req.headers['accept-language']);
   const cacheKey = `${searchType}_${query.toLowerCase().trim()}_${config.hl}_${config.gl}_${limit}_start${offset}`;
 
-  if (cache.has(cacheKey)) {
-    const cachedData = cache.get(cacheKey);
-    if (Date.now() - cachedData.timestamp < CACHE_TTL) {
-      return res.json(cachedData.data);
-    }
-    cache.delete(cacheKey);
+  const staleEntry = cache.get(cacheKey) || null;
+  if (staleEntry && Date.now() - staleEntry.timestamp < CACHE_TTL) {
+    return res.json(staleEntry.data);
   }
 
   try {
@@ -844,6 +732,7 @@ app.get('/api/search', async (req, res) => {
 
     // Jangan cache hasil gambar yang relevansinya rendah
     if (!results.lowRelevance) {
+      if (cache.size >= 500) cache.delete(cache.keys().next().value);
       cache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
     }
     return res.json(responsePayload);
@@ -851,10 +740,18 @@ app.get('/api/search', async (req, res) => {
   } catch (error) {
     console.error(`[API ERROR] Type=${searchType}:`, error.message);
 
+    // Sumber gagal tapi ada hasil lama untuk query yang sama -> lebih baik kirim itu daripada error
+    if (staleEntry) {
+      return res.json({ ...staleEntry.data, stale: true });
+    }
+
     let statusCode = 500;
     let customMessage = 'Terjadi kesalahan pada server backend.';
 
-    if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
+    if (error.message.startsWith('ALL_IMAGE_STRATEGIES_FAILED') || error.message.startsWith('IRRELEVANT_RESULT')) {
+      statusCode = 502;
+      customMessage = 'Bing tidak mengembalikan gambar yang valid saat ini (kemungkinan IP server sedang dibatasi). Coba lagi beberapa saat.';
+    } else if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
       statusCode = 502;
       customMessage = 'Semua sumber berita (primer & fallback) gagal.';
     } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
@@ -898,6 +795,7 @@ app.get('/api/debug/images', async (req, res) => {
         strategy: attempt.name,
         status: r.status,
         htmlLength: r.htmlLength,
+        pageTitle: r.pageTitle,
         blocked: r.blocked,
         count: r.images.length,
         relevance: Number(r.score.toFixed(2)),
