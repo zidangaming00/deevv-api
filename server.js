@@ -306,23 +306,18 @@ async function fetchWebResults(query, config, limit, offset) {
 }
 
 // ==========================================
-// 2. SCRAPER GAMBAR (Bing Images) — FIX RELEVANSI
+// 2. SCRAPER GAMBAR
 //
-// Penyebab hasil gambar tidak nyambung dengan query:
-// - Request tidak membawa setmkt/setlang di URL, dan header Sec-Fetch-*
-//   + Cookie palsu bikin Bing menganggap request aneh lalu melempar
-//     ke halaman "Trending"/default (gambar yang sama untuk semua query).
-// - Halaman penuh /images/search juga memuat blok gambar rekomendasi
-//   selain hasil utama, dan paginasi lewat `first` di halaman penuh kurang stabil.
+// Urutan sumber: Bing -> DuckDuckGo -> Openverse.
+// Bing tetap yang pertama. Kalau Bing memberi halaman tanpa data gambar
+// (kasus IP Railway), API otomatis pindah ke sumber berikutnya sehingga
+// frontend tidak perlu diubah dan tidak lagi kena 502.
 //
-// Solusi:
-// - Pakai endpoint /images/async (fragmen HTML hasil murni, dipakai
-//   infinite scroll Bing sendiri) dengan setmkt/setlang di URL.
-// - Header dibuat sederhana seperti browser biasa, tanpa cookie palsu.
-// - Fallback ke halaman penuh kalau async gagal.
-// - Cek relevansi: kalau hasil tidak mengandung kata dari query sama
-//   sekali, dianggap kena halaman default dan dicoba strategi berikutnya.
+// Opsional: set env IMAGE_PROXY_URL (mis. http://user:pass@host:port)
+// untuk mengirim request gambar Bing lewat proxy.
 // ==========================================
+const NO_EL = { attr: () => '', find: () => ({ attr: () => '' }) };
+
 function queryTokens(query) {
   return query
     .toLowerCase()
@@ -341,9 +336,6 @@ function relevanceScore(images, query) {
   return hits / images.length;
 }
 
-// ==========================================
-// PEMBERSIH & EKSTRAKTOR DIMENSI MULTI-LAPIS (Tahan Perubahan Struktur)
-// ==========================================
 function safeParseInt(val) {
   if (!val) return 0;
   const num = parseInt(String(val).replace(/[^\d]/g, ''), 10);
@@ -351,11 +343,9 @@ function safeParseInt(val) {
 }
 
 function extractDimensions(mData, $el) {
-  // Lapis 1: Ambil dari atribut mData JSON (Bing standar)
   let w = safeParseInt(mData.mw || mData.w || mData.ow || mData.width);
   let h = safeParseInt(mData.mh || mData.h || mData.oh || mData.height);
 
-  // Lapis 2: Jika gagal, cari di atribut HTML elemen <a> atau <img>
   if (!w || !h) {
     const dataDim = $el.attr('data-dim') || $el.find('img').attr('data-dim') || '';
     if (dataDim && dataDim.includes('x')) {
@@ -365,7 +355,6 @@ function extractDimensions(mData, $el) {
     }
   }
 
-  // Lapis 3: Cari ukuran thumbnail sebagai pembagi/rasio cadangan (jika ada)
   if (!w || !h) {
     const tw = safeParseInt(mData.tw || mData.thumbWidth);
     const th = safeParseInt(mData.th || mData.thumbHeight);
@@ -375,62 +364,114 @@ function extractDimensions(mData, $el) {
     }
   }
 
-  // Lapis 4: Fallback Tipe Gambar Default (Mencegah nilai 0 agar layout CSS/Masonry tidak pecah)
-  // Default ke rasio landscape populer (1920x1080) jika benar-benar tidak terdeteksi
+  return { width: w || 1920, height: h || 1080 };
+}
+
+function getImageProxy() {
+  const raw = process.env.IMAGE_PROXY_URL;
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return {
+      protocol: u.protocol.replace(':', ''),
+      host: u.hostname,
+      port: Number(u.port) || (u.protocol === 'https:' ? 443 : 80),
+      ...(u.username ? { auth: { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) } } : {})
+    };
+  } catch (e) {
+    console.warn('[IMAGES] IMAGE_PROXY_URL tidak valid, diabaikan.');
+    return null;
+  }
+}
+
+function decodeEntities(s) {
+  return s
+    .replace(/&quot;|&#34;|&#x22;/gi, '"')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&amp;/g, '&')
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\\//g, '/');
+}
+
+function buildImage(d, $el, offset, count, query) {
+  const imageUrl = d.murl;
+  const thumbnailUrl = d.turl;
+  const targetLink = d.purl;
+  const title = d.t || d.desc || query;
+
+  let domain = '';
+  try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
+
+  const dims = extractDimensions(d, $el || NO_EL);
+
   return {
-    width: w || 1920,
-    height: h || 1080
+    title: String(title).replace(/<[^>]+>/g, ''),
+    image: imageUrl,
+    imageUrl,
+    thumbnail: thumbnailUrl || imageUrl,
+    thumbnailUrl: thumbnailUrl || imageUrl,
+    width: dims.width,
+    height: dims.height,
+    imageWidth: dims.width,
+    imageHeight: dims.height,
+    source: domain || 'bing',
+    domain: domain || 'bing',
+    pageUrl: targetLink || imageUrl,
+    link: targetLink || imageUrl,
+    position: offset + count + 1
   };
 }
 
-function parseBingImageCards($, limit, offset, query) {
+// Parser cadangan: cari "murl" langsung di HTML mentah, apa pun tag pembungkusnya.
+function parseBingImagesRaw(html, limit, offset, query) {
+  const text = decodeEntities(html);
+  const images = [];
+  const seen = new Set();
+  const re = /"murl"\s*:\s*"(https?:[^"]+)"/g;
+  let m;
+  while ((m = re.exec(text)) && images.length < limit) {
+    const murl = m[1];
+    if (seen.has(murl)) continue;
+    seen.add(murl);
+
+    let d = null;
+    const start = text.lastIndexOf('{', m.index);
+    const end = text.indexOf('}', m.index);
+    if (start !== -1 && end !== -1) {
+      try { d = JSON.parse(text.slice(start, end + 1)); } catch (e) {}
+    }
+    if (!d || !d.murl) {
+      const chunk = text.slice(Math.max(0, m.index - 600), m.index + 900);
+      const pick = k => (chunk.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)"`)) || [])[1];
+      d = { murl, turl: pick('turl'), purl: pick('purl'), t: pick('t') };
+    }
+    images.push(buildImage(d, null, offset, images.length, query));
+  }
+  return images;
+}
+
+function parseBingImageCards($, html, limit, offset, query) {
   const images = [];
   const seen = new Set();
 
-  $('a.iusc').each((_, el) => {
+  $('a.iusc, [m*="murl"], [data-m*="murl"]').each((_, el) => {
     if (images.length >= limit) return false;
     const $el = $(el);
-    const mAttr = $el.attr('m');
+    const mAttr = $el.attr('m') || $el.attr('data-m');
     if (!mAttr) return;
 
     try {
-      const mData = JSON.parse(mAttr);
-      const imageUrl = mData.murl;
-      const thumbnailUrl = mData.turl;
-      const title = mData.t || mData.desc || query;
-      const targetLink = mData.purl;
-
-      if (!imageUrl || !imageUrl.startsWith('http') || seen.has(imageUrl)) return;
-      seen.add(imageUrl);
-
-      let domain = '';
-      try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
-
-      // Ekstraksi Dimensi Berlapis
-      const dims = extractDimensions(mData, $el);
-
-      images.push({
-        title: String(title).replace(/<[^>]+>/g, ''),
-        image: imageUrl,
-        imageUrl,
-        thumbnail: thumbnailUrl || imageUrl,
-        thumbnailUrl: thumbnailUrl || imageUrl,
-        
-        // Dimensi Gambar Utama
-        width: dims.width,
-        height: dims.height,
-        imageWidth: dims.width,
-        imageHeight: dims.height,
-        
-        source: domain || 'bing',
-        domain: domain || 'bing',
-        pageUrl: targetLink || imageUrl,
-        link: targetLink || imageUrl,
-        position: offset + images.length + 1
-      });
+      const d = JSON.parse(mAttr);
+      if (!d.murl || !d.murl.startsWith('http') || seen.has(d.murl)) return;
+      seen.add(d.murl);
+      images.push(buildImage(d, $el, offset, images.length, query));
     } catch (e) {}
   });
 
+  if (images.length === 0 && html) return parseBingImagesRaw(html, limit, offset, query);
   return images;
 }
 
@@ -462,6 +503,7 @@ function buildImageAttempts(query, config, offset, fetchCount) {
 }
 
 async function runImageAttempt(attempt, query, limit, offset) {
+  const proxy = getImageProxy();
   const res = await axios.get(attempt.url, {
     headers: {
       'User-Agent': getRandomUserAgent(),
@@ -469,71 +511,195 @@ async function runImageAttempt(attempt, query, limit, offset) {
       'Accept-Language': attempt.acceptLang,
       'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`
     },
-    timeout: 10000
+    timeout: 10000,
+    ...(proxy ? { proxy } : {})
   });
 
   const html = typeof res.data === 'string' ? res.data : '';
   const blocked = looksBlocked(html);
   const $ = cheerio.load(html);
-  const images = blocked ? [] : parseBingImageCards($, limit, offset, query);
+  const images = blocked ? [] : parseBingImageCards($, html, limit, offset, query);
   const score = relevanceScore(images, query);
   const pageTitle = ($('title').first().text() || '').trim().slice(0, 80);
 
-  return { images, score, blocked, status: res.status, htmlLength: html.length, pageTitle };
+  const debug = {
+    iusc: (html.match(/class="iusc"/g) || []).length,
+    murl: (html.match(/murl/g) || []).length,
+    challenge: /captcha|challenge|unusual traffic|robot/i.test(html),
+    proxy: !!proxy
+  };
+
+  if (images.length === 0) {
+    $('script, style').remove();
+    debug.bodyText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 300);
+    console.log(
+      `[IMG-DEBUG] ${attempt.name} status=${res.status} len=${html.length} title="${pageTitle}" ` +
+      `iusc=${debug.iusc} murl=${debug.murl} challenge=${debug.challenge} proxy=${debug.proxy} body="${debug.bodyText}"`
+    );
+  }
+
+  return { images, score, blocked, status: res.status, htmlLength: html.length, pageTitle, debug };
+}
+
+async function fetchImagesBing(query, config, limit, offset) {
+  const fetchCount = Math.max(limit, 20);
+  const attempts = buildImageAttempts(query, config, offset, fetchCount);
+
+  let best = null;
+  let bestScore = -1;
+  let anyImages = false;
+  const errors = [];
+
+  for (const attempt of attempts) {
+    // Market utama tidak memberi gambar sama sekali -> kemungkinan Bing membatasi IP server.
+    // Jangan tambah beban dengan mencoba market lain.
+    if (attempt.market !== config.mkt && !anyImages) break;
+
+    try {
+      const r = await runImageAttempt(attempt, query, limit, offset);
+
+      if (r.blocked) throw new Error(`BLOCKED_CAPTCHA (${attempt.name})`);
+      if (r.images.length === 0) {
+        throw new Error(`EMPTY (${attempt.name}, html ${r.htmlLength}B, title "${r.pageTitle}")`);
+      }
+
+      anyImages = true;
+      console.log(`[IMAGES] "${query}" via ${attempt.name}: ${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`);
+
+      if (r.score > bestScore) { best = r.images; bestScore = r.score; }
+      if (r.score >= 0.2) return r.images;
+    } catch (err) {
+      errors.push(err.message);
+      console.warn(`[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`);
+    }
+  }
+
+  if (best && bestScore < 0.1) {
+    throw new Error(`IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak berhubungan dengan "${query}".`);
+  }
+  if (!best) {
+    throw new Error(`BING_FAILED: ${errors.join(' | ')}`);
+  }
+
+  best.lowRelevance = true;
+  return best;
+}
+
+// --- Fallback 1: DuckDuckGo Images (endpoint tidak resmi: token vqd + i.js) ---
+async function fetchImagesDdg(query, config, limit, offset) {
+  const headers = {
+    'User-Agent': getRandomUserAgent(),
+    'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`
+  };
+
+  const home = await axios.get(
+    `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iar=images&iax=images&ia=images`,
+    { headers, timeout: 8000 }
+  );
+  const m = String(home.data).match(/vqd=["']?([\d-]+)["']?/);
+  if (!m) throw new Error('DDG_NO_VQD');
+
+  const res = await axios.get('https://duckduckgo.com/i.js', {
+    params: {
+      l: `${config.gl.toLowerCase()}-${config.hl}`,
+      o: 'json',
+      q: query,
+      vqd: m[1],
+      f: ',,,,,',
+      p: '1',
+      s: offset
+    },
+    headers: { ...headers, Referer: 'https://duckduckgo.com/', Accept: 'application/json' },
+    timeout: 8000
+  });
+
+  const items = (res.data?.results || [])
+    .filter(r => r.image && r.image.startsWith('http'))
+    .slice(0, limit);
+  if (items.length === 0) throw new Error('DDG_EMPTY');
+
+  return items.map((r, i) => {
+    let domain = '';
+    try { domain = new URL(r.url || r.image).hostname.replace(/^www\./, ''); } catch (e) {}
+    return {
+      title: String(r.title || query).replace(/<[^>]+>/g, ''),
+      image: r.image,
+      imageUrl: r.image,
+      thumbnail: r.thumbnail || r.image,
+      thumbnailUrl: r.thumbnail || r.image,
+      width: r.width || 1920,
+      height: r.height || 1080,
+      imageWidth: r.width || 1920,
+      imageHeight: r.height || 1080,
+      source: domain || 'duckduckgo',
+      domain: domain || 'duckduckgo',
+      pageUrl: r.url || r.image,
+      link: r.url || r.image,
+      position: offset + i + 1
+    };
+  });
+}
+
+// --- Fallback 2: Openverse (API resmi, gratis, gambar berlisensi terbuka) ---
+async function fetchImagesOpenverse(query, config, limit, offset) {
+  const pageSize = Math.min(limit, 20);
+  const page = Math.floor(offset / pageSize) + 1;
+
+  const res = await axios.get('https://api.openverse.org/v1/images/', {
+    params: { q: query, page_size: pageSize, page },
+    headers: { 'User-Agent': 'search-api/1.0' },
+    timeout: 8000
+  });
+
+  const items = res.data?.results || [];
+  if (items.length === 0) throw new Error('OPENVERSE_EMPTY');
+
+  return items.map((r, i) => {
+    const pageUrl = r.foreign_landing_url || r.url;
+    let domain = '';
+    try { domain = new URL(pageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
+    return {
+      title: r.title || query,
+      image: r.url,
+      imageUrl: r.url,
+      thumbnail: r.thumbnail || r.url,
+      thumbnailUrl: r.thumbnail || r.url,
+      width: r.width || 1920,
+      height: r.height || 1080,
+      imageWidth: r.width || 1920,
+      imageHeight: r.height || 1080,
+      source: domain || 'openverse',
+      domain: domain || 'openverse',
+      pageUrl,
+      link: pageUrl,
+      position: offset + i + 1
+    };
+  });
 }
 
 async function fetchImages(query, config, limit, offset) {
-  try {
-    const fetchCount = Math.max(limit, 20);
-    const attempts = buildImageAttempts(query, config, offset, fetchCount);
+  const sources = [
+    ['bing-images', fetchImagesBing],
+    ['ddg-images', fetchImagesDdg],
+    ['openverse-images', fetchImagesOpenverse]
+  ];
+  const errors = [];
 
-    let best = null;
-    let bestScore = -1;
-    let anyImages = false;
-    const errors = [];
-
-    for (const attempt of attempts) {
-      // Market utama tidak memberi gambar sama sekali -> kemungkinan Bing sedang
-      // membatasi IP server. Jangan tambah beban dengan mencoba market lain.
-      if (attempt.market !== config.mkt && !anyImages) break;
-
-      try {
-        const r = await runImageAttempt(attempt, query, limit, offset);
-
-        if (r.blocked) throw new Error(`BLOCKED_CAPTCHA (${attempt.name})`);
-        if (r.images.length === 0) {
-          throw new Error(`EMPTY (${attempt.name}, html ${r.htmlLength}B, title "${r.pageTitle}")`);
-        }
-
-        anyImages = true;
-        console.log(`[IMAGES] "${query}" via ${attempt.name}: ${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`);
-
-        if (r.score > bestScore) { best = r.images; bestScore = r.score; }
-
-        if (r.score >= 0.2) {
-          trackSource('bing-images', true);
-          return r.images;
-        }
-      } catch (err) {
-        errors.push(err.message);
-        console.warn(`[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`);
-      }
+  for (const [name, fn] of sources) {
+    try {
+      const out = await fn(query, config, limit, offset);
+      trackSource(name, true);
+      out.provider = name;
+      console.log(`[IMAGES] "${query}" berhasil via ${name}: ${out.length} gambar`);
+      return out;
+    } catch (err) {
+      trackSource(name, false, err.message);
+      errors.push(`${name}: ${err.message}`);
+      console.warn(`[IMAGES] ${name} gagal: ${err.message}`);
     }
-
-    if (best && bestScore < 0.1) {
-      throw new Error(`IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak berhubungan dengan "${query}".`);
-    }
-    if (!best) {
-      throw new Error(`ALL_IMAGE_STRATEGIES_FAILED: ${errors.join(' | ')}`);
-    }
-
-    trackSource('bing-images', true);
-    best.lowRelevance = true;
-    return best;
-  } catch (err) {
-    trackSource('bing-images', false, err.message);
-    throw err;
   }
+
+  throw new Error(`ALL_IMAGE_STRATEGIES_FAILED: ${errors.join(' | ')}`);
 }
 
 // ==========================================
@@ -773,6 +939,7 @@ app.get('/api/search', async (req, res) => {
         formattedSearchTime: searchTime,
         totalResults: results.length
       },
+      provider: results.provider || undefined,
       results,
       images: searchType === 'images' ? results : undefined,
       items: searchType === 'search' ? results : undefined,
@@ -799,7 +966,7 @@ app.get('/api/search', async (req, res) => {
 
     if (error.message.startsWith('ALL_IMAGE_STRATEGIES_FAILED') || error.message.startsWith('IRRELEVANT_RESULT')) {
       statusCode = 502;
-      customMessage = 'Bing tidak mengembalikan gambar yang valid saat ini (kemungkinan IP server sedang dibatasi). Coba lagi beberapa saat.';
+      customMessage = 'Semua sumber gambar (Bing, DuckDuckGo, Openverse) gagal saat ini. Coba lagi beberapa saat.';
     } else if (error.message.startsWith('ALL_NEWS_SOURCES_FAILED')) {
       statusCode = 502;
       customMessage = 'Semua sumber berita (primer & fallback) gagal.';
@@ -824,7 +991,7 @@ app.get('/api/search', async (req, res) => {
 
 // ==========================================
 // DEBUG: lihat apa yang sebenarnya dikembalikan Bing per strategi
-// Pakai: /api/debug/images?q=Prabowo   (tambah &key=... kalau DEBUG_KEY di-set)
+// Pakai: /api/debug/images?q=ninja+hattori   (tambah &key=... kalau DEBUG_KEY di-set)
 // ==========================================
 app.get('/api/debug/images', async (req, res) => {
   if (process.env.DEBUG_KEY && req.query.key !== process.env.DEBUG_KEY) {
@@ -848,6 +1015,7 @@ app.get('/api/debug/images', async (req, res) => {
         blocked: r.blocked,
         count: r.images.length,
         relevance: Number(r.score.toFixed(2)),
+        debug: r.debug,
         sampleTitles: r.images.slice(0, 5).map(i => i.title)
       });
     } catch (err) {
