@@ -719,30 +719,39 @@ function parseBingImagesRaw(
   const seen = new Set();
 
   $('a.iusc').each((_, el) => {
-    if (images.length >= limit) return false;
+    if (images.length >= limit) {
+      return false;
+    }
 
     const $el = $(el);
-    const rawM = $el.attr('m');
+    const rawM =
+      $el.attr('m') ||
+      $el.attr('data-m');
 
     if (!rawM) return;
 
     let d = null;
 
-    try {
-      d = JSON.parse(
-        decodeEntities(rawM)
-      );
-    } catch (e) {
+    const candidates = [
+      rawM,
+      decodeEntities(rawM),
+      rawM
+        .replace(/&quot;/gi, '"')
+        .replace(/&#34;/gi, '"')
+        .replace(/&#x22;/gi, '"')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#39;/gi, "'")
+        .replace(/&#x27;/gi, "'")
+    ];
+
+    for (const candidate of candidates) {
       try {
-        d = JSON.parse(
-          rawM
-            .replace(/&quot;/gi, '"')
-            .replace(/&#39;/gi, "'")
-            .replace(/&amp;/gi, '&')
-        );
-      } catch (e2) {
-        d = null;
-      }
+        d = JSON.parse(candidate);
+
+        if (d && d.murl) {
+          break;
+        }
+      } catch (e) {}
     }
 
     if (!d || !d.murl) return;
@@ -790,30 +799,50 @@ function parseBingImageCards(
 
     if (!mAttr) return;
 
-    try {
-      const d = JSON.parse(mAttr);
+    let d = null;
 
-      if (
-        !d.murl ||
-        !d.murl.startsWith('http') ||
-        seen.has(d.murl)
-      ) {
-        return;
-      }
+    const candidates = [
+      mAttr,
+      decodeEntities(mAttr),
+      mAttr
+        .replace(/&quot;/gi, '"')
+        .replace(/&#34;/gi, '"')
+        .replace(/&#x22;/gi, '"')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#39;/gi, "'")
+        .replace(/&#x27;/gi, "'")
+    ];
 
-      seen.add(d.murl);
+    for (const candidate of candidates) {
+      try {
+        d = JSON.parse(candidate);
 
-      images.push(
-        buildImage(
-          d,
-          $el,
-          offset,
-          images.length,
-          query
-        )
-      );
+        if (d && d.murl) {
+          break;
+        }
+      } catch (e) {}
+    }
 
-    } catch (e) {}
+    if (
+      !d ||
+      !d.murl ||
+      !/^https?:\/\//i.test(d.murl) ||
+      seen.has(d.murl)
+    ) {
+      return;
+    }
+
+    seen.add(d.murl);
+
+    images.push(
+      buildImage(
+        d,
+        $el,
+        offset,
+        images.length,
+        query
+      )
+    );
   });
 
   if (
