@@ -502,14 +502,34 @@ function buildImageAttempts(query, config, offset, fetchCount) {
   return attempts;
 }
 
+// UA tetap (Windows Chrome) untuk gambar: UA Linux/acak lebih mudah dianggap bot.
+const BING_UA = USER_AGENTS[0];
+let bingCookie = { value: '', at: 0 };
+
+async function getBingCookie(proxy) {
+  if (bingCookie.value && Date.now() - bingCookie.at < 10 * 60 * 1000) return bingCookie.value;
+  try {
+    const r = await axios.get('https://www.bing.com/', {
+      headers: { 'User-Agent': BING_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+      timeout: 6000,
+      ...(proxy ? { proxy } : {})
+    });
+    const set = r.headers['set-cookie'] || [];
+    bingCookie = { value: set.map(c => c.split(';')[0]).join('; '), at: Date.now() };
+  } catch (e) {}
+  return bingCookie.value;
+}
+
 async function runImageAttempt(attempt, query, limit, offset) {
   const proxy = getImageProxy();
+  const cookie = await getBingCookie(proxy);
   const res = await axios.get(attempt.url, {
     headers: {
-      'User-Agent': getRandomUserAgent(),
+      'User-Agent': BING_UA,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': attempt.acceptLang,
-      'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`
+      'Referer': `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
+      ...(cookie ? { Cookie: cookie } : {})
     },
     timeout: 10000,
     ...(proxy ? { proxy } : {})
@@ -525,7 +545,8 @@ async function runImageAttempt(attempt, query, limit, offset) {
   const debug = {
     iusc: (html.match(/class="iusc"/g) || []).length,
     murl: (html.match(/murl/g) || []).length,
-    challenge: /captcha|challenge|unusual traffic|robot/i.test(html),
+    challenge: /captcha|unusual traffic|are you a robot|geetest/i.test(html),
+    cookie: !!bingCookie.value,
     proxy: !!proxy
   };
 
@@ -588,7 +609,7 @@ async function fetchImagesBing(query, config, limit, offset) {
 // --- Fallback 1: DuckDuckGo Images (endpoint tidak resmi: token vqd + i.js) ---
 async function fetchImagesDdg(query, config, limit, offset) {
   const headers = {
-    'User-Agent': getRandomUserAgent(),
+    'User-Agent': USER_AGENTS[0],
     'Accept-Language': `${config.hl}-${config.gl.toUpperCase()},${config.hl};q=0.9`
   };
 
@@ -686,17 +707,26 @@ async function fetchImages(query, config, limit, offset) {
   const errors = [];
 
   for (const [name, fn] of sources) {
-    try {
-      const out = await fn(query, config, limit, offset);
-      trackSource(name, true);
-      out.provider = name;
-      console.log(`[IMAGES] "${query}" berhasil via ${name}: ${out.length} gambar`);
-      return out;
-    } catch (err) {
-      trackSource(name, false, err.message);
-      errors.push(`${name}: ${err.message}`);
-      console.warn(`[IMAGES] ${name} gagal: ${err.message}`);
+    // Bing terbukti kadang berhasil, kadang tidak -> coba ulang sekali sebelum pindah sumber
+    const tries = name === 'bing-images' ? 2 : 1;
+    let lastErr = null;
+
+    for (let t = 1; t <= tries; t++) {
+      try {
+        const out = await fn(query, config, limit, offset);
+        trackSource(name, true);
+        out.provider = name;
+        console.log(`[IMAGES] "${query}" berhasil via ${name} (percobaan ${t}): ${out.length} gambar`);
+        return out;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[IMAGES] ${name} percobaan ${t}/${tries} gagal: ${err.message}`);
+        if (t < tries) await new Promise(r => setTimeout(r, 600));
+      }
     }
+
+    trackSource(name, false, lastErr.message);
+    errors.push(`${name}: ${lastErr.message}`);
   }
 
   throw new Error(`ALL_IMAGE_STRATEGIES_FAILED: ${errors.join(' | ')}`);
