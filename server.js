@@ -672,6 +672,16 @@ function buildImage(
     $el || NO_EL
   );
 
+  let rawHtml = '';
+
+  try {
+    rawHtml = cheerio
+      .html($el || '')
+      .slice(0, 8000);
+  } catch (e) {
+    rawHtml = '';
+  }
+
   return {
     title: String(title)
       .replace(/<[^>]+>/g, ''),
@@ -679,15 +689,22 @@ function buildImage(
     imageUrl,
     thumbnail: thumbnailUrl || imageUrl,
     thumbnailUrl: thumbnailUrl || imageUrl,
+
     width: dims.width,
     height: dims.height,
     imageWidth: dims.width,
     imageHeight: dims.height,
+
     source: domain || 'bing',
     domain: domain || 'bing',
     pageUrl: targetLink || imageUrl,
     link: targetLink || imageUrl,
-    position: offset + count + 1
+    position: offset + count + 1,
+
+    _debug: {
+      rawMetadata: d,
+      rawHtml: rawHtml
+    }
   };
 }
 
