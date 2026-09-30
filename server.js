@@ -714,79 +714,53 @@ function parseBingImagesRaw(
   offset,
   query
 ) {
-  const text = decodeEntities(html);
+  const $ = cheerio.load(html);
   const images = [];
   const seen = new Set();
 
-  const re =
-    /"murl"\s*:\s*"(https?:[^"]+)"/g;
+  $('a.iusc').each((_, el) => {
+    if (images.length >= limit) return false;
 
-  let m;
+    const $el = $(el);
+    const rawM = $el.attr('m');
 
-  while (
-    (m = re.exec(text)) &&
-    images.length < limit
-  ) {
-    const murl = m[1];
-
-    if (seen.has(murl)) {
-      continue;
-    }
-
-    seen.add(murl);
+    if (!rawM) return;
 
     let d = null;
 
-    const start =
-      text.lastIndexOf('{', m.index);
-
-    const end =
-      text.indexOf('}', m.index);
-
-    if (
-      start !== -1 &&
-      end !== -1
-    ) {
+    try {
+      d = JSON.parse(
+        decodeEntities(rawM)
+      );
+    } catch (e) {
       try {
         d = JSON.parse(
-          text.slice(start, end + 1)
+          rawM
+            .replace(/&quot;/gi, '"')
+            .replace(/&#39;/gi, "'")
+            .replace(/&amp;/gi, '&')
         );
-      } catch (e) {}
+      } catch (e2) {
+        d = null;
+      }
     }
 
-    if (!d || !d.murl) {
-      const chunk = text.slice(
-        Math.max(0, m.index - 600),
-        m.index + 900
-      );
+    if (!d || !d.murl) return;
 
-      const pick = k =>
-        (
-          chunk.match(
-            new RegExp(
-              `"${k}"\\s*:\\s*"([^"]*)"`
-            )
-          ) || []
-        )[1];
+    if (seen.has(d.murl)) return;
 
-      d = {
-        murl,
-        turl: pick('turl'),
-        purl: pick('purl'),
-        t: pick('t')
-      };
-    }
+    seen.add(d.murl);
 
     images.push(
       buildImage(
         d,
-        null,
+        $el,
         offset,
         images.length,
         query
       )
     );
-  }
+  });
 
   return images;
 }
