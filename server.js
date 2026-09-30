@@ -341,13 +341,56 @@ function relevanceScore(images, query) {
   return hits / images.length;
 }
 
+// ==========================================
+// PEMBERSIH & EKSTRAKTOR DIMENSI MULTI-LAPIS (Tahan Perubahan Struktur)
+// ==========================================
+function safeParseInt(val) {
+  if (!val) return 0;
+  const num = parseInt(String(val).replace(/[^\d]/g, ''), 10);
+  return isNaN(num) ? 0 : num;
+}
+
+function extractDimensions(mData, $el) {
+  // Lapis 1: Ambil dari atribut mData JSON (Bing standar)
+  let w = safeParseInt(mData.mw || mData.w || mData.ow || mData.width);
+  let h = safeParseInt(mData.mh || mData.h || mData.oh || mData.height);
+
+  // Lapis 2: Jika gagal, cari di atribut HTML elemen <a> atau <img>
+  if (!w || !h) {
+    const dataDim = $el.attr('data-dim') || $el.find('img').attr('data-dim') || '';
+    if (dataDim && dataDim.includes('x')) {
+      const [dw, dh] = dataDim.split('x');
+      if (!w) w = safeParseInt(dw);
+      if (!h) h = safeParseInt(dh);
+    }
+  }
+
+  // Lapis 3: Cari ukuran thumbnail sebagai pembagi/rasio cadangan (jika ada)
+  if (!w || !h) {
+    const tw = safeParseInt(mData.tw || mData.thumbWidth);
+    const th = safeParseInt(mData.th || mData.thumbHeight);
+    if (tw && th) {
+      if (!w) w = tw;
+      if (!h) h = th;
+    }
+  }
+
+  // Lapis 4: Fallback Tipe Gambar Default (Mencegah nilai 0 agar layout CSS/Masonry tidak pecah)
+  // Default ke rasio landscape populer (1920x1080) jika benar-benar tidak terdeteksi
+  return {
+    width: w || 1920,
+    height: h || 1080
+  };
+}
+
 function parseBingImageCards($, limit, offset, query) {
   const images = [];
   const seen = new Set();
 
   $('a.iusc').each((_, el) => {
     if (images.length >= limit) return false;
-    const mAttr = $(el).attr('m');
+    const $el = $(el);
+    const mAttr = $el.attr('m');
     if (!mAttr) return;
 
     try {
@@ -363,16 +406,22 @@ function parseBingImageCards($, limit, offset, query) {
       let domain = '';
       try { domain = new URL(targetLink || imageUrl).hostname.replace(/^www\./, ''); } catch (e) {}
 
+      // Ekstraksi Dimensi Berlapis
+      const dims = extractDimensions(mData, $el);
+
       images.push({
         title: String(title).replace(/<[^>]+>/g, ''),
         image: imageUrl,
         imageUrl,
         thumbnail: thumbnailUrl || imageUrl,
         thumbnailUrl: thumbnailUrl || imageUrl,
-        width: mData.mw || 0,
-        height: mData.mh || 0,
-        imageWidth: mData.mw || 0,
-        imageHeight: mData.mh || 0,
+        
+        // Dimensi Gambar Utama
+        width: dims.width,
+        height: dims.height,
+        imageWidth: dims.width,
+        imageHeight: dims.height,
+        
         source: domain || 'bing',
         domain: domain || 'bing',
         pageUrl: targetLink || imageUrl,
