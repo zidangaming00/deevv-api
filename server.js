@@ -675,9 +675,9 @@ function buildImage(
   let rawHtml = '';
 
 try {
-  if ($el && $el.length) {
-    rawHtml = $el.toString().slice(0, 8000);
-  }
+  rawHtml = cheerio
+    .html($el || '')
+    .slice(0, 8000);
 } catch (e) {
   rawHtml = '';
 }
