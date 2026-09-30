@@ -531,6 +531,8 @@ function safeParseInt(val) {
 
 function extractDimensions(mData, $el) {
   let w = safeParseInt(
+    mData.tw ||
+    mData.thumbWidth ||
     mData.mw ||
     mData.w ||
     mData.ow ||
@@ -538,6 +540,8 @@ function extractDimensions(mData, $el) {
   );
 
   let h = safeParseInt(
+    mData.th ||
+    mData.thumbHeight ||
     mData.mh ||
     mData.h ||
     mData.oh ||
@@ -550,34 +554,37 @@ function extractDimensions(mData, $el) {
       $el.find('img').attr('data-dim') ||
       '';
 
-    if (dataDim && dataDim.includes('x')) {
-      const [dw, dh] = dataDim.split('x');
+    if (dataDim) {
+      const match = dataDim.match(
+        /(\d+)\s*[x×]\s*(\d+)/i
+      );
 
-      if (!w) w = safeParseInt(dw);
-      if (!h) h = safeParseInt(dh);
+      if (match) {
+        if (!w) w = safeParseInt(match[1]);
+        if (!h) h = safeParseInt(match[2]);
+      }
     }
   }
 
-  if (!w || !h) {
-    const tw = safeParseInt(
-      mData.tw ||
-      mData.thumbWidth
-    );
+  if ((!w || !h) && mData.murl) {
+    const ratio =
+      safeParseInt(mData.w) &&
+      safeParseInt(mData.h)
+        ? safeParseInt(mData.w) / safeParseInt(mData.h)
+        : null;
 
-    const th = safeParseInt(
-      mData.th ||
-      mData.thumbHeight
-    );
-
-    if (tw && th) {
-      if (!w) w = tw;
-      if (!h) h = th;
+    if (ratio) {
+      if (w && !h) {
+        h = Math.round(w / ratio);
+      } else if (h && !w) {
+        w = Math.round(h * ratio);
+      }
     }
   }
 
   return {
-    width: w || 1920,
-    height: h || 1080
+    width: w || null,
+    height: h || null
   };
 }
 
