@@ -733,10 +733,6 @@ function extractDimensions(
   let width = 0;
   let height = 0;
 
-  // ==========================================
-  // UKURAN ASLI GAMBAR
-  // ==========================================
-
   const originalWidthFields = [
     mData?.ow,
     mData?.originalWidth,
@@ -777,10 +773,6 @@ function extractDimensions(
     }
   }
 
-  // ==========================================
-  // FIELD UKURAN TAMBAHAN
-  // ==========================================
-
   if (!width) {
     const fields = [
       mData?.w,
@@ -820,10 +812,6 @@ function extractDimensions(
       }
     }
   }
-
-  // ==========================================
-  // FORMAT 1920x1080
-  // ==========================================
 
   if (!width || !height) {
     const sources = [
@@ -866,10 +854,6 @@ function extractDimensions(
       }
     }
   }
-
-  // ==========================================
-  // RAW ATTRIBUTE m
-  // ==========================================
 
   if (
     (!width || !height) &&
@@ -931,10 +915,6 @@ function extractDimensions(
       }
     }
   }
-
-  // ==========================================
-  // HTML ATTRIBUTE
-  // ==========================================
 
   if (
     $el &&
@@ -1141,7 +1121,6 @@ function buildImage(
       thumbnailUrl ||
       imageUrl,
 
-    // HANYA INI UNTUK UKURAN
     width: dims.width,
     height: dims.height,
 
@@ -1170,6 +1149,8 @@ function parseBingImageCards(
 ) {
   const images = [];
   const seen = new Set();
+
+  let rawGridImage = null;
 
   $(
     'a.iusc, [m*="murl"], [data-m*="murl"]'
@@ -1203,6 +1184,18 @@ function parseBingImageCards(
 
     seen.add(imageUrl);
 
+    if (!rawGridImage) {
+      const grid =
+        $el.closest(
+          'div.imgpt, li.imgpt, div.mimg, div.dg_b'
+        ).first();
+
+      rawGridImage =
+        grid.length
+          ? $.html(grid)
+          : $.html(el);
+    }
+
     const built =
       buildImage(
         d,
@@ -1218,7 +1211,10 @@ function parseBingImageCards(
     }
   });
 
-  return images;
+  return {
+    images,
+    rawGridImage
+  };
 }
 
 function parseBingImagesRaw(
@@ -1230,57 +1226,13 @@ function parseBingImagesRaw(
   const $ =
     cheerio.load(html);
 
-  const images = [];
-  const seen = new Set();
-
-  $(
-    'a.iusc, [m*="murl"], [data-m*="murl"]'
-  ).each((_, el) => {
-    if (images.length >= limit) {
-      return false;
-    }
-
-    const $el = $(el);
-
-    const rawM =
-      $el.attr('m') ||
-      $el.attr('data-m');
-
-    const d =
-      parseImageMetadata(rawM);
-
-    if (!d || !d.murl) {
-      return;
-    }
-
-    const imageUrl =
-      normalizeUrl(d.murl);
-
-    if (
-      !imageUrl ||
-      seen.has(imageUrl)
-    ) {
-      return;
-    }
-
-    seen.add(imageUrl);
-
-    const built =
-      buildImage(
-        d,
-        $el,
-        offset,
-        images.length,
-        query,
-        rawM
-      );
-
-    if (built) {
-      images.push(built);
-    }
-  });
-
-  return images;
+  return parseBingImageCards(
+    $,
+    html,
+    limit,
+    offset,
+    query
+  );
 }
 
 function buildImageAttempts(
@@ -1461,15 +1413,27 @@ async function runImageAttempt(
   const $ =
     cheerio.load(html);
 
-  const images = blocked
-    ? []
-    : parseBingImageCards(
+  let parsed = {
+    images: [],
+    rawGridImage: null
+  };
+
+  if (!blocked) {
+    parsed =
+      parseBingImageCards(
         $,
         html,
         limit,
         offset,
         query
       );
+  }
+
+  const images =
+    parsed.images;
+
+  const rawGridImage =
+    parsed.rawGridImage;
 
   const score =
     relevanceScore(
@@ -1523,8 +1487,16 @@ async function runImageAttempt(
     );
   }
 
+  if (rawGridImage) {
+    console.log(
+      `[IMG-RAW-GRID] ${attempt.name} ` +
+      `length=${rawGridImage.length}`
+    );
+  }
+
   return {
     images,
+    rawGridImage,
     score,
     blocked,
     status: res.status,
@@ -1555,6 +1527,7 @@ async function fetchImagesBing(
 
   let best = null;
   let bestScore = -1;
+  let bestRawGridImage = null;
 
   const errors = [];
 
@@ -1594,14 +1567,22 @@ async function fetchImagesBing(
       ) {
         best =
           r.images;
+
         bestScore =
           r.score;
+
+        bestRawGridImage =
+          r.rawGridImage || null;
       }
 
       if (
         r.score >= 0.2
       ) {
-        return r.images;
+        return {
+          images: r.images,
+          rawGridImage:
+            r.rawGridImage || null
+        };
       }
     } catch (err) {
       errors.push(
@@ -1629,7 +1610,11 @@ async function fetchImagesBing(
     );
   }
 
-  return best;
+  return {
+    images: best,
+    rawGridImage:
+      bestRawGridImage
+  };
 }
 
 async function fetchImages(
@@ -1662,7 +1647,7 @@ async function fetchImages(
 
       console.log(
         `[IMAGES] "${query}" berhasil via bing-images ` +
-        `(percobaan ${t}): ${out.length} gambar`
+        `(percobaan ${t}): ${out.images.length} gambar`
       );
 
       return out;
@@ -2304,18 +2289,25 @@ app.get(
 
     try {
       let results = [];
+      let rawGridImage = null;
 
       if (
         searchType ===
         'images'
       ) {
-        results =
+        const imageResult =
           await fetchImages(
             query,
             config,
             limit,
             offset
           );
+
+        results =
+          imageResult.images;
+
+        rawGridImage =
+          imageResult.rawGridImage;
       } else if (
         searchType ===
         'news'
@@ -2416,6 +2408,12 @@ app.get(
           searchType ===
           'news'
             ? results
+            : undefined,
+
+        rawGridImage:
+          searchType ===
+          'images'
+            ? rawGridImage
             : undefined
       };
 
