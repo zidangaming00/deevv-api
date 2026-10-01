@@ -991,6 +991,82 @@ function extractDimensions(
     }
   }
 
+  // ==========================================
+  // TEKS CAPTION (mis. "1920 x 1080 · jpeg")
+  // ==========================================
+
+  if (
+    (!width || !height) &&
+    $el &&
+    typeof $el.closest === 'function'
+  ) {
+    try {
+      const container =
+        $el.closest('li');
+
+      const captionText =
+        container.find(
+          '.img_info .nowrap, .img_info, .imgpt .nowrap'
+        )
+          .first()
+          .text() || '';
+
+      const match =
+        captionText.match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
+
+      if (match) {
+        if (!width) {
+          width =
+            parseInt(
+              match[1],
+              10
+            );
+        }
+
+        if (!height) {
+          height =
+            parseInt(
+              match[2],
+              10
+            );
+        }
+      }
+    } catch (e) {}
+  }
+
+  // ==========================================
+  // ATRIBUT THUMBNAIL (hanya rasio aspek,
+  // dipakai bila ukuran asli tidak ditemukan)
+  // ==========================================
+
+  if (
+    (!width || !height) &&
+    $el &&
+    typeof $el.find === 'function'
+  ) {
+    try {
+      const thumb =
+        $el.find('img').first();
+
+      const tw =
+        safeParseInt(
+          thumb.attr('width')
+        );
+
+      const th =
+        safeParseInt(
+          thumb.attr('height')
+        );
+
+      if (tw > 0 && th > 0) {
+        width = width || tw;
+        height = height || th;
+      }
+    } catch (e) {}
+  }
+
   return {
     width: width || null,
     height: height || null
@@ -1221,6 +1297,72 @@ function parseBingImageCards(
   return images;
 }
 
+// ==========================================
+// FALLBACK: AMBIL JSON "murl" LANGSUNG DARI
+// HTML MENTAH (tanpa bergantung selector)
+// ==========================================
+
+function parseMurlFallback(
+  html,
+  limit,
+  offset,
+  query
+) {
+  if (!html) return [];
+
+  const text =
+    decodeEntities(html)
+      .replace(/\\"/g, '"');
+
+  const re =
+    /\{[^{}]*"murl"\s*:\s*"[^"]+"[^{}]*\}/g;
+
+  const images = [];
+  const seen = new Set();
+
+  let m;
+
+  while (
+    (m = re.exec(text)) &&
+    images.length < limit
+  ) {
+    let d;
+
+    try {
+      d = JSON.parse(m[0]);
+    } catch (e) {
+      continue;
+    }
+
+    if (!d || !d.murl) continue;
+
+    const url =
+      normalizeUrl(d.murl);
+
+    if (!url || seen.has(url)) {
+      continue;
+    }
+
+    seen.add(url);
+
+    const built =
+      buildImage(
+        d,
+        null,
+        offset,
+        images.length,
+        query,
+        m[0]
+      );
+
+    if (built) {
+      images.push(built);
+    }
+  }
+
+  return images;
+}
+
 function parseBingImagesRaw(
   html,
   limit,
@@ -1329,9 +1471,14 @@ function buildImageAttempts(
       url:
         `https://www.bing.com/images/async` +
         `?q=${q}` +
-        `&first=${offset + 1}` +
+        `&first=${offset}` +
         `&count=${fetchCount}` +
+        `&relp=${fetchCount}` +
+        `&tsc=ImageBasicHover` +
+        `&datsrc=I` +
+        `&layout=RowBased` +
         `&mmasync=1` +
+        `&adlt=off` +
         `&${common}`
     });
 
@@ -1461,7 +1608,7 @@ async function runImageAttempt(
   const $ =
     cheerio.load(html);
 
-  const images = blocked
+  let images = blocked
     ? []
     : parseBingImageCards(
         $,
@@ -1470,6 +1617,26 @@ async function runImageAttempt(
         offset,
         query
       );
+
+  // Fallback: ambil JSON murl langsung dari HTML mentah
+  if (
+    !blocked &&
+    images.length === 0
+  ) {
+    images =
+      parseMurlFallback(
+        html,
+        limit,
+        offset,
+        query
+      );
+
+    if (images.length > 0) {
+      console.log(
+        `[IMAGES] ${attempt.name}: selector kosong, fallback regex menemukan ${images.length} gambar`
+      );
+    }
+  }
 
   const score =
     relevanceScore(
