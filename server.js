@@ -1,4 +1,3 @@
-
 import express from 'express';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -56,8 +55,6 @@ function getRandomUserAgent() {
   ];
 }
 
-// Bahasa dan negara ditentukan di backend.
-// Tidak membaca hl/gl dari URL atau Accept-Language.
 function resolveLanguageConfig() {
   return {
     hl: 'id',
@@ -66,8 +63,13 @@ function resolveLanguageConfig() {
   };
 }
 
-function normalizeUrl(url, base = 'https://www.bing.com') {
-  if (!url || typeof url !== 'string') return null;
+function normalizeUrl(
+  url,
+  base = 'https://www.bing.com'
+) {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
 
   const value = url.trim();
 
@@ -209,7 +211,9 @@ function decodeBase64Url(str) {
       s += '=';
     }
 
-    return Buffer.from(s, 'base64').toString('utf8');
+    return Buffer
+      .from(s, 'base64')
+      .toString('utf8');
   } catch (e) {
     return null;
   }
@@ -238,9 +242,10 @@ function decodeBingParam(val) {
 
 function decodeGoogleNewsArticle(link) {
   try {
-    const m = new URL(link)
-      .pathname
-      .match(/\/articles\/([^/?]+)/);
+    const pathname = new URL(link).pathname;
+    const m = pathname.match(
+      /\/articles\/([^/?]+)/
+    );
 
     if (!m) return null;
 
@@ -248,8 +253,14 @@ function decodeGoogleNewsArticle(link) {
       .replace(/-/g, '+')
       .replace(/_/g, '/');
 
+    let padded = encoded;
+
+    while (padded.length % 4) {
+      padded += '=';
+    }
+
     const raw = Buffer
-      .from(encoded, 'base64')
+      .from(padded, 'base64')
       .toString('latin1');
 
     const found = raw.match(
@@ -284,7 +295,10 @@ function resolveByParams(link) {
           const v = u.searchParams.get(p);
           const decoded = decodeBingParam(v);
 
-          if (decoded && decoded !== current) {
+          if (
+            decoded &&
+            decoded !== current
+          ) {
             next = decoded;
             break;
           }
@@ -313,19 +327,25 @@ async function resolveByHttp(link) {
     }
 
     try {
-      const res = await axios.get(current, {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept': 'text/html,*/*;q=0.8'
-        },
-        timeout: 5000,
-        maxRedirects: 0,
-        responseType: 'text',
-        maxContentLength: 512 * 1024,
-        validateStatus: s => s < 400
-      });
+      const res = await axios.get(
+        current,
+        {
+          headers: {
+            'User-Agent': getRandomUserAgent(),
+            'Accept': 'text/html,*/*;q=0.8'
+          },
+          timeout: 5000,
+          maxRedirects: 0,
+          responseType: 'text',
+          maxContentLength: 512 * 1024,
+          validateStatus: s => s < 400
+        }
+      );
 
-      if (res.status >= 300 && res.headers.location) {
+      if (
+        res.status >= 300 &&
+        res.headers.location
+      ) {
         current = new URL(
           res.headers.location,
           current
@@ -334,14 +354,21 @@ async function resolveByHttp(link) {
         continue;
       }
 
-      const html = typeof res.data === 'string'
-        ? res.data
-        : '';
+      const html =
+        typeof res.data === 'string'
+          ? res.data
+          : '';
 
       const m =
-        html.match(/http-equiv=["']refresh["'][^>]*url=([^"'>\s]+)/i) ||
-        html.match(/\bvar\s+u\s*=\s*["'](https?:[^"']+)["']/i) ||
-        html.match(/window\.location(?:\.href)?\s*=\s*["'](https?:[^"']+)["']/i);
+        html.match(
+          /http-equiv=["']refresh["'][^>]*url=([^"'>\s]+)/i
+        ) ||
+        html.match(
+          /\bvar\s+u\s*=\s*["'](https?:[^"']+)["']/i
+        ) ||
+        html.match(
+          /window\.location(?:\.href)?\s*=\s*["'](https?:[^"']+)["']/i
+        );
 
       if (!m) {
         return null;
@@ -352,13 +379,20 @@ async function resolveByHttp(link) {
         .replace(/\\u0026/g, '&')
         .replace(/\\\//g, '/');
 
-      current = new URL(next, current).toString();
-
+      current = new URL(
+        next,
+        current
+      ).toString();
     } catch (e) {
-      const loc = e.response?.headers?.location;
+      const loc =
+        e.response?.headers?.location;
 
       if (loc) {
-        current = new URL(loc, current).toString();
+        current = new URL(
+          loc,
+          current
+        ).toString();
+
         continue;
       }
 
@@ -372,7 +406,10 @@ async function resolveByHttp(link) {
 }
 
 async function resolveLink(link) {
-  if (!link || !/^https?:\/\//i.test(link)) {
+  if (
+    !link ||
+    !/^https?:\/\//i.test(link)
+  ) {
     return {
       link,
       resolved: false
@@ -393,7 +430,8 @@ async function resolveLink(link) {
   let finalUrl = resolveByParams(link);
 
   if (isSearchEngineUrl(finalUrl)) {
-    const viaHttp = await resolveByHttp(finalUrl);
+    const viaHttp =
+      await resolveByHttp(finalUrl);
 
     if (viaHttp) {
       finalUrl = viaHttp;
@@ -406,7 +444,8 @@ async function resolveLink(link) {
   };
 
   if (linkCache.size >= LINK_CACHE_MAX) {
-    const oldest = linkCache.keys().next().value;
+    const oldest =
+      linkCache.keys().next().value;
 
     if (oldest) {
       linkCache.delete(oldest);
@@ -418,11 +457,21 @@ async function resolveLink(link) {
   return result;
 }
 
-async function finalizeLinks(items, concurrency = 5) {
+async function finalizeLinks(
+  items,
+  concurrency = 5
+) {
   const out = items;
 
-  for (let i = 0; i < out.length; i += concurrency) {
-    const chunk = out.slice(i, i + concurrency);
+  for (
+    let i = 0;
+    i < out.length;
+    i += concurrency
+  ) {
+    const chunk = out.slice(
+      i,
+      i + concurrency
+    );
 
     await Promise.all(
       chunk.map(async item => {
@@ -477,20 +526,28 @@ async function fetchWebResults(
       `&setlang=${config.hl}` +
       `&first=${firstIndex}`;
 
-    const res = await axios.get(bingWebUrl, {
-      headers: {
-        'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'id-ID,id;q=0.9,en;q=0.7',
-        'Referer': 'https://www.bing.com/'
-      },
-      timeout: 10000,
-      maxContentLength: 5 * 1024 * 1024
-    });
+    const res = await axios.get(
+      bingWebUrl,
+      {
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language':
+            'id-ID,id;q=0.9,en;q=0.7',
+          'Referer':
+            'https://www.bing.com/'
+        },
+        timeout: 10000,
+        maxContentLength:
+          5 * 1024 * 1024
+      }
+    );
 
-    const html = typeof res.data === 'string'
-      ? res.data
-      : '';
+    const html =
+      typeof res.data === 'string'
+        ? res.data
+        : '';
 
     if (looksBlocked(html)) {
       throw new Error(
@@ -505,17 +562,28 @@ async function fetchWebResults(
         return false;
       }
 
-      const titleEl = $(el).find('h2 a').first();
+      const titleEl =
+        $(el).find('h2 a').first();
 
       const snippetEl = $(el)
-        .find('div.b_caption p, p.b_lineclamp')
+        .find(
+          'div.b_caption p, p.b_lineclamp'
+        )
         .first();
 
-      const title = titleEl.text().trim();
-      const link = normalizeUrl(titleEl.attr('href'));
-      const snippet = snippetEl.text().trim();
+      const title =
+        titleEl.text().trim();
 
-      if (!title || !link) return;
+      const link = normalizeUrl(
+        titleEl.attr('href')
+      );
+
+      const snippet =
+        snippetEl.text().trim();
+
+      if (!title || !link) {
+        return;
+      }
 
       let domain = '';
 
@@ -528,9 +596,12 @@ async function fetchWebResults(
       items.push({
         title,
         link,
-        snippet: snippet || 'Tidak ada deskripsi.',
+        snippet:
+          snippet ||
+          'Tidak ada deskripsi.',
         domain,
-        position: offset + items.length + 1
+        position:
+          offset + items.length + 1
       });
     });
 
@@ -540,12 +611,19 @@ async function fetchWebResults(
       );
     }
 
-    trackSource('bing-web', true);
+    trackSource(
+      'bing-web',
+      true
+    );
 
     return items;
-
   } catch (err) {
-    trackSource('bing-web', false, err.message);
+    trackSource(
+      'bing-web',
+      false,
+      err.message
+    );
+
     throw err;
   }
 }
@@ -568,10 +646,17 @@ function queryTokens(query) {
     .filter(t => t.length >= 3);
 }
 
-function relevanceScore(images, query) {
-  const tokens = queryTokens(query);
+function relevanceScore(
+  images,
+  query
+) {
+  const tokens =
+    queryTokens(query);
 
-  if (tokens.length === 0 || images.length === 0) {
+  if (
+    tokens.length === 0 ||
+    images.length === 0
+  ) {
     return 1;
   }
 
@@ -582,7 +667,11 @@ function relevanceScore(images, query) {
       `${img.title} ${img.pageUrl} ${img.imageUrl}`
         .toLowerCase();
 
-    if (tokens.some(t => hay.includes(t))) {
+    if (
+      tokens.some(
+        t => hay.includes(t)
+      )
+    ) {
       hits++;
     }
   }
@@ -591,25 +680,61 @@ function relevanceScore(images, query) {
 }
 
 function safeParseInt(val) {
-  if (val === undefined || val === null || val === '') {
+  if (
+    val === undefined ||
+    val === null ||
+    val === ''
+  ) {
     return 0;
   }
 
-  const match = String(val).match(/\d+/);
+  const match =
+    String(val).match(/\d+/);
 
   if (!match) return 0;
 
-  const num = parseInt(match[0], 10);
+  const num =
+    parseInt(match[0], 10);
 
-  return Number.isFinite(num) ? num : 0;
+  return Number.isFinite(num)
+    ? num
+    : 0;
 }
 
-function extractDimensions(mData, $el, rawM = '') {
+function decodeEntities(s) {
+  if (!s) return '';
+
+  return String(s)
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) =>
+      String.fromCharCode(
+        parseInt(h, 16)
+      )
+    )
+    .replace(/&#(\d+);/g, (_, d) =>
+      String.fromCharCode(
+        parseInt(d, 10)
+      )
+    )
+    .replace(/&amp;/gi, '&')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\\//g, '/');
+}
+
+function extractDimensions(
+  mData,
+  $el,
+  rawM = ''
+) {
   let width = 0;
   let height = 0;
 
   // ==========================================
-  // 1. PRIORITAS UTAMA: METADATA ASLI BING
+  // UKURAN ASLI GAMBAR
   // ==========================================
 
   const originalWidthFields = [
@@ -628,8 +753,11 @@ function extractDimensions(mData, $el, rawM = '') {
     mData?.image_height
   ];
 
-  for (const value of originalWidthFields) {
-    const n = safeParseInt(value);
+  for (
+    const value of originalWidthFields
+  ) {
+    const n =
+      safeParseInt(value);
 
     if (n > 0) {
       width = n;
@@ -637,8 +765,11 @@ function extractDimensions(mData, $el, rawM = '') {
     }
   }
 
-  for (const value of originalHeightFields) {
-    const n = safeParseInt(value);
+  for (
+    const value of originalHeightFields
+  ) {
+    const n =
+      safeParseInt(value);
 
     if (n > 0) {
       height = n;
@@ -647,8 +778,7 @@ function extractDimensions(mData, $el, rawM = '') {
   }
 
   // ==========================================
-  // 2. CARI FIELD UKURAN LAIN DI METADATA
-  // HANYA JIKA UKURAN ASLI BELUM LENGKAP
+  // FIELD UKURAN TAMBAHAN
   // ==========================================
 
   if (!width) {
@@ -661,7 +791,8 @@ function extractDimensions(mData, $el, rawM = '') {
     ];
 
     for (const value of fields) {
-      const n = safeParseInt(value);
+      const n =
+        safeParseInt(value);
 
       if (n > 0) {
         width = n;
@@ -680,7 +811,8 @@ function extractDimensions(mData, $el, rawM = '') {
     ];
 
     for (const value of fields) {
-      const n = safeParseInt(value);
+      const n =
+        safeParseInt(value);
 
       if (n > 0) {
         height = n;
@@ -690,7 +822,7 @@ function extractDimensions(mData, $el, rawM = '') {
   }
 
   // ==========================================
-  // 3. CARI FORMAT "1920x1080" DI METADATA
+  // FORMAT 1920x1080
   // ==========================================
 
   if (!width || !height) {
@@ -706,68 +838,108 @@ function extractDimensions(mData, $el, rawM = '') {
     for (const value of sources) {
       if (!value) continue;
 
-      const match = String(value).match(
-        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const match =
+        String(value).match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (match) {
         if (!width) {
-          width = parseInt(match[1], 10);
+          width =
+            parseInt(
+              match[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(match[2], 10);
+          height =
+            parseInt(
+              match[2],
+              10
+            );
         }
 
-        if (width && height) break;
+        if (width && height) {
+          break;
+        }
       }
     }
   }
 
   // ==========================================
-  // 4. CARI LANGSUNG DI RAW ATTRIBUTE m
+  // RAW ATTRIBUTE m
   // ==========================================
 
-  if ((!width || !height) && rawM) {
-    const raw = decodeEntities(String(rawM));
+  if (
+    (!width || !height) &&
+    rawM
+  ) {
+    const raw =
+      decodeEntities(
+        String(rawM)
+      );
 
     const widthMatch =
-      raw.match(/["'](?:ow|originalWidth|imageWidth|width)["']\s*:\s*["']?(\d{2,6})/i);
+      raw.match(
+        /["'](?:ow|originalWidth|imageWidth|width)["']\s*:\s*["']?(\d{2,6})/i
+      );
 
     const heightMatch =
-      raw.match(/["'](?:oh|originalHeight|imageHeight|height)["']\s*:\s*["']?(\d{2,6})/i);
+      raw.match(
+        /["'](?:oh|originalHeight|imageHeight|height)["']\s*:\s*["']?(\d{2,6})/i
+      );
 
     if (!width && widthMatch) {
-      width = parseInt(widthMatch[1], 10);
+      width =
+        parseInt(
+          widthMatch[1],
+          10
+        );
     }
 
     if (!height && heightMatch) {
-      height = parseInt(heightMatch[1], 10);
+      height =
+        parseInt(
+          heightMatch[1],
+          10
+        );
     }
 
-    // Coba pasangan ukuran seperti 1920x1080
     if (!width || !height) {
-      const dimMatch = raw.match(
-        /(?:dimensions?|resolution|size|imageSize|dim)["']?\s*[:=]\s*["']?(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const dimMatch =
+        raw.match(
+          /(?:dimensions?|resolution|size|imageSize|dim)["']?\s*[:=]\s*["']?(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (dimMatch) {
         if (!width) {
-          width = parseInt(dimMatch[1], 10);
+          width =
+            parseInt(
+              dimMatch[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(dimMatch[2], 10);
+          height =
+            parseInt(
+              dimMatch[2],
+              10
+            );
         }
       }
     }
   }
 
   // ==========================================
-  // 5. FALLBACK DARI ATTRIBUTE HTML
+  // HTML ATTRIBUTE
   // ==========================================
 
-  if ($el && typeof $el.attr === 'function') {
+  if (
+    $el &&
+    typeof $el.attr === 'function'
+  ) {
     const attrs = [
       $el.attr('data-dim'),
       $el.attr('data-size'),
@@ -776,7 +948,8 @@ function extractDimensions(mData, $el, rawM = '') {
       $el.attr('data-image-size')
     ];
 
-    const img = $el.find('img').first();
+    const img =
+      $el.find('img').first();
 
     attrs.push(
       img.attr('data-dim'),
@@ -789,20 +962,31 @@ function extractDimensions(mData, $el, rawM = '') {
     for (const value of attrs) {
       if (!value) continue;
 
-      const match = String(value).match(
-        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const match =
+        String(value).match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (match) {
         if (!width) {
-          width = parseInt(match[1], 10);
+          width =
+            parseInt(
+              match[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(match[2], 10);
+          height =
+            parseInt(
+              match[2],
+              10
+            );
         }
 
-        if (width && height) break;
+        if (width && height) {
+          break;
+        }
       }
     }
   }
@@ -814,33 +998,47 @@ function extractDimensions(mData, $el, rawM = '') {
 }
 
 function getImageProxy() {
-  const raw = process.env.IMAGE_PROXY_URL;
+  const raw =
+    process.env.IMAGE_PROXY_URL;
 
   if (!raw) return null;
 
   try {
     const u = new URL(raw);
 
-    if (!['http:', 'https:'].includes(u.protocol)) {
+    if (
+      !['http:', 'https:']
+        .includes(u.protocol)
+    ) {
       return null;
     }
 
     return {
-      protocol: u.protocol.replace(':', ''),
+      protocol:
+        u.protocol.replace(':', ''),
       host: u.hostname,
-      port: Number(u.port) || (
-        u.protocol === 'https:' ? 443 : 80
-      ),
+      port:
+        Number(u.port) ||
+        (
+          u.protocol === 'https:'
+            ? 443
+            : 80
+        ),
       ...(u.username
         ? {
             auth: {
-              username: decodeURIComponent(u.username),
-              password: decodeURIComponent(u.password)
+              username:
+                decodeURIComponent(
+                  u.username
+                ),
+              password:
+                decodeURIComponent(
+                  u.password
+                )
             }
           }
         : {})
     };
-
   } catch (e) {
     console.warn(
       '[IMAGES] IMAGE_PROXY_URL tidak valid, diabaikan.'
@@ -850,43 +1048,25 @@ function getImageProxy() {
   }
 }
 
-function decodeEntities(s) {
-  if (!s) return '';
-
-  return String(s)
-    .replace(/&quot;|&#34;|&#x22;/gi, '"')
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) =>
-      String.fromCharCode(parseInt(h, 16))
-    )
-    .replace(/&#(\d+);/g, (_, d) =>
-      String.fromCharCode(parseInt(d, 10))
-    )
-    .replace(/&amp;/g, '&')
-    .replace(/&#39;|&#x27;/gi, "'")
-    .replace(/\\u0022/gi, '"')
-    .replace(/\\u0026/gi, '&')
-    .replace(/\\u002f/gi, '/')
-    .replace(/\\\//g, '/');
-}
-
 function parseImageMetadata(raw) {
   if (!raw) return null;
 
   const candidates = [
     raw,
     decodeEntities(raw),
-    raw
+    String(raw)
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
       .replace(/&quot;/gi, '"')
-      .replace(/&#34;/gi, '"')
-      .replace(/&#x22;/gi, '"')
       .replace(/&amp;/gi, '&')
-      .replace(/&#39;/gi, "'")
-      .replace(/&#x27;/gi, "'")
   ];
 
-  for (const candidate of candidates) {
+  for (
+    const candidate of candidates
+  ) {
     try {
-      const parsed = JSON.parse(candidate);
+      const parsed =
+        JSON.parse(candidate);
 
       if (
         parsed &&
@@ -901,30 +1081,49 @@ function parseImageMetadata(raw) {
   return null;
 }
 
-function buildImage(d, $el, offset, count, query, rawM = '') {
-  const imageUrl = normalizeUrl(d.murl);
-  const thumbnailUrl = normalizeUrl(d.turl);
-  const targetLink = normalizeUrl(d.purl);
+function buildImage(
+  d,
+  $el,
+  offset,
+  count,
+  query,
+  rawM = ''
+) {
+  const imageUrl =
+    normalizeUrl(d.murl);
 
-  if (!imageUrl) return null;
+  const thumbnailUrl =
+    normalizeUrl(d.turl);
 
-  const title = d.t || d.desc || query;
+  const targetLink =
+    normalizeUrl(d.purl);
+
+  if (!imageUrl) {
+    return null;
+  }
+
+  const title =
+    d.t ||
+    d.desc ||
+    query;
 
   let domain = '';
 
   try {
     domain = new URL(
-      targetLink || imageUrl
+      targetLink ||
+      imageUrl
     )
       .hostname
       .replace(/^www\./, '');
   } catch (e) {}
 
-  const dims = extractDimensions(
-    d,
-    $el || NO_EL,
-    rawM
-  );
+  const dims =
+    extractDimensions(
+      d,
+      $el || NO_EL,
+      rawM
+    );
 
   return {
     title: String(title)
@@ -934,79 +1133,40 @@ function buildImage(d, $el, offset, count, query, rawM = '') {
     image: imageUrl,
     imageUrl,
 
-    thumbnail: thumbnailUrl || imageUrl,
-    thumbnailUrl: thumbnailUrl || imageUrl,
+    thumbnail:
+      thumbnailUrl ||
+      imageUrl,
 
+    thumbnailUrl:
+      thumbnailUrl ||
+      imageUrl,
+
+    // HANYA INI UNTUK UKURAN
     width: dims.width,
     height: dims.height,
 
     source: domain || '',
     domain: domain || '',
 
-    pageUrl: targetLink || imageUrl,
-    link: targetLink || imageUrl,
+    pageUrl:
+      targetLink ||
+      imageUrl,
 
-    position: offset + count + 1
+    link:
+      targetLink ||
+      imageUrl,
+
+    position:
+      offset + count + 1
   };
 }
 
-function parseBingImagesRaw(
+function parseBingImageCards(
+  $,
   html,
   limit,
   offset,
   query
-) {
-  const $ = cheerio.load(html);
-  const images = [];
-  const seen = new Set();
-
-  $('a.iusc, [m*="murl"], [data-m*="murl"]').each((_, el) => {
-    if (images.length >= limit) {
-      return false;
-    }
-
-    const $el = $(el);
-
-    const rawM =
-      $el.attr('m') ||
-      $el.attr('data-m');
-
-    const d = parseImageMetadata(rawM);
-
-    if (!d || !d.murl) return;
-
-    const imageUrl = normalizeUrl(d.murl);
-
-    if (!imageUrl || seen.has(imageUrl)) return;
-
-    seen.add(imageUrl);
-
-    
-
-    const built = buildImage(
-  d,
-  $el,
-  offset,
-  images.length,
-  query,
-  rawM
-);
-
-    if (built) {
-      images.push(built);
-    }
-  });
-
-  return images;
-}
-
-const built = buildImage(
-  d,
-  $el,
-  offset,
-  images.length,
-  query,
-  mAttr
 ) {
   const images = [];
   const seen = new Set();
@@ -1024,37 +1184,101 @@ const built = buildImage(
       $el.attr('m') ||
       $el.attr('data-m');
 
-    const d = parseImageMetadata(mAttr);
+    const d =
+      parseImageMetadata(mAttr);
 
-    if (!d || !d.murl) return;
+    if (!d || !d.murl) {
+      return;
+    }
 
-    const imageUrl = normalizeUrl(d.murl);
+    const imageUrl =
+      normalizeUrl(d.murl);
 
-    if (!imageUrl || seen.has(imageUrl)) return;
+    if (
+      !imageUrl ||
+      seen.has(imageUrl)
+    ) {
+      return;
+    }
 
     seen.add(imageUrl);
 
-    const built = buildImage(
-      d,
-      $el,
-      offset,
-      images.length,
-      query
-    );
+    const built =
+      buildImage(
+        d,
+        $el,
+        offset,
+        images.length,
+        query,
+        mAttr
+      );
 
     if (built) {
       images.push(built);
     }
   });
 
-  if (images.length === 0 && html) {
-    return parseBingImagesRaw(
-      html,
-      limit,
-      offset,
-      query
-    );
-  }
+  return images;
+}
+
+function parseBingImagesRaw(
+  html,
+  limit,
+  offset,
+  query
+) {
+  const $ =
+    cheerio.load(html);
+
+  const images = [];
+  const seen = new Set();
+
+  $(
+    'a.iusc, [m*="murl"], [data-m*="murl"]'
+  ).each((_, el) => {
+    if (images.length >= limit) {
+      return false;
+    }
+
+    const $el = $(el);
+
+    const rawM =
+      $el.attr('m') ||
+      $el.attr('data-m');
+
+    const d =
+      parseImageMetadata(rawM);
+
+    if (!d || !d.murl) {
+      return;
+    }
+
+    const imageUrl =
+      normalizeUrl(d.murl);
+
+    if (
+      !imageUrl ||
+      seen.has(imageUrl)
+    ) {
+      return;
+    }
+
+    seen.add(imageUrl);
+
+    const built =
+      buildImage(
+        d,
+        $el,
+        offset,
+        images.length,
+        query,
+        rawM
+      );
+
+    if (built) {
+      images.push(built);
+    }
+  });
 
   return images;
 }
@@ -1065,7 +1289,8 @@ function buildImageAttempts(
   offset,
   fetchCount
 ) {
-  const q = encodeURIComponent(query);
+  const q =
+    encodeURIComponent(query);
 
   const markets = [
     {
@@ -1080,7 +1305,9 @@ function buildImageAttempts(
     }
   ].filter(
     (m, i, arr) =>
-      arr.findIndex(x => x.mkt === m.mkt) === i
+      arr.findIndex(
+        x => x.mkt === m.mkt
+      ) === i
   );
 
   const attempts = [];
@@ -1091,10 +1318,12 @@ function buildImageAttempts(
       `&setlang=${m.hl}` +
       `&cc=${m.cc}`;
 
-    const acceptLang = `${m.mkt},${m.hl};q=0.9`;
+    const acceptLang =
+      `${m.mkt},${m.hl};q=0.9`;
 
     attempts.push({
-      name: `async-${m.mkt}`,
+      name:
+        `async-${m.mkt}`,
       market: m.mkt,
       acceptLang,
       url:
@@ -1107,7 +1336,8 @@ function buildImageAttempts(
     });
 
     attempts.push({
-      name: `page-${m.mkt}`,
+      name:
+        `page-${m.mkt}`,
       market: m.mkt,
       acceptLang,
       url:
@@ -1122,7 +1352,10 @@ function buildImageAttempts(
   return attempts;
 }
 
-// Cookie Bing disimpan sementara.
+// ==========================================
+// COOKIE BING
+// ==========================================
+
 let bingCookie = {
   value: '',
   at: 0
@@ -1131,33 +1364,42 @@ let bingCookie = {
 async function getBingCookie(proxy) {
   if (
     bingCookie.value &&
-    Date.now() - bingCookie.at < 10 * 60 * 1000
+    Date.now() -
+      bingCookie.at <
+      10 * 60 * 1000
   ) {
     return bingCookie.value;
   }
 
   try {
-    const r = await axios.get(
-      'https://www.bing.com/',
-      {
-        headers: {
-          'User-Agent': BING_UA,
-          'Accept-Language': 'id-ID,id;q=0.9,en;q=0.7'
-        },
-        timeout: 7000,
-        ...(proxy ? { proxy } : {})
-      }
-    );
+    const r =
+      await axios.get(
+        'https://www.bing.com/',
+        {
+          headers: {
+            'User-Agent': BING_UA,
+            'Accept-Language':
+              'id-ID,id;q=0.9,en;q=0.7'
+          },
+          timeout: 7000,
+          ...(proxy
+            ? { proxy }
+            : {})
+        }
+      );
 
-    const set = r.headers['set-cookie'] || [];
+    const set =
+      r.headers['set-cookie'] ||
+      [];
 
     bingCookie = {
       value: set
-        .map(c => c.split(';')[0])
+        .map(
+          c => c.split(';')[0]
+        )
         .join('; '),
       at: Date.now()
     };
-
   } catch (e) {
     console.warn(
       `[IMAGES] Gagal mengambil cookie Bing: ${e.message}`
@@ -1167,38 +1409,57 @@ async function getBingCookie(proxy) {
   return bingCookie.value;
 }
 
+// ==========================================
+// IMAGE REQUEST
+// ==========================================
+
 async function runImageAttempt(
   attempt,
   query,
   limit,
   offset
 ) {
-  const proxy = getImageProxy();
-  const cookie = await getBingCookie(proxy);
+  const proxy =
+    getImageProxy();
 
-  const res = await axios.get(
-    attempt.url,
-    {
-      headers: {
-        'User-Agent': BING_UA,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': attempt.acceptLang,
-        'Referer':
-          `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
-        ...(cookie ? { Cookie: cookie } : {})
-      },
-      timeout: 12000,
-      maxContentLength: 8 * 1024 * 1024,
-      ...(proxy ? { proxy } : {})
-    }
-  );
+  const cookie =
+    await getBingCookie(proxy);
 
-  const html = typeof res.data === 'string'
-    ? res.data
-    : '';
+  const res =
+    await axios.get(
+      attempt.url,
+      {
+        headers: {
+          'User-Agent': BING_UA,
+          'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language':
+            attempt.acceptLang,
+          'Referer':
+            `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
+          ...(cookie
+            ? { Cookie: cookie }
+            : {})
+        },
+        timeout: 12000,
+        maxContentLength:
+          8 * 1024 * 1024,
+        ...(proxy
+          ? { proxy }
+          : {})
+      }
+    );
 
-  const blocked = looksBlocked(html);
-  const $ = cheerio.load(html);
+  const html =
+    typeof res.data === 'string'
+      ? res.data
+      : '';
+
+  const blocked =
+    looksBlocked(html);
+
+  const $ =
+    cheerio.load(html);
 
   const images = blocked
     ? []
@@ -1210,39 +1471,55 @@ async function runImageAttempt(
         query
       );
 
-  const score = relevanceScore(images, query);
+  const score =
+    relevanceScore(
+      images,
+      query
+    );
 
-  const pageTitle = ($('title').first().text() || '')
-    .trim()
-    .slice(0, 80);
-
-  const debug = {
-    iusc: (html.match(/class=["']iusc["']/g) || []).length,
-    murl: (html.match(/murl/g) || []).length,
-    challenge: looksBlocked(html),
-    cookie: !!bingCookie.value,
-    proxy: !!proxy
-  };
+  const pageTitle =
+    (
+      $('title')
+        .first()
+        .text() ||
+      ''
+    )
+      .trim()
+      .slice(0, 80);
 
   if (images.length === 0) {
     $('script, style').remove();
 
-    debug.bodyText = $('body')
-      .text()
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 300);
+    const bodyText =
+      $('body')
+        .text()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+
+    const iuscCount =
+      (
+        html.match(
+          /class=["']iusc["']/g
+        ) || []
+      ).length;
+
+    const murlCount =
+      (
+        html.match(/murl/g) ||
+        []
+      ).length;
 
     console.log(
       `[IMG-DEBUG] ${attempt.name} ` +
       `status=${res.status} ` +
       `len=${html.length} ` +
       `title="${pageTitle}" ` +
-      `iusc=${debug.iusc} ` +
-      `murl=${debug.murl} ` +
-      `challenge=${debug.challenge} ` +
-      `proxy=${debug.proxy} ` +
-      `body="${debug.bodyText}"`
+      `iusc=${iuscCount} ` +
+      `murl=${murlCount} ` +
+      `challenge=${blocked} ` +
+      `proxy=${!!proxy} ` +
+      `body="${bodyText}"`
     );
   }
 
@@ -1252,8 +1529,7 @@ async function runImageAttempt(
     blocked,
     status: res.status,
     htmlLength: html.length,
-    pageTitle,
-    debug
+    pageTitle
   };
 }
 
@@ -1263,30 +1539,36 @@ async function fetchImagesBing(
   limit,
   offset
 ) {
-  const fetchCount = Math.max(limit, 20);
+  const fetchCount =
+    Math.max(
+      limit,
+      20
+    );
 
-  const attempts = buildImageAttempts(
-    query,
-    config,
-    offset,
-    fetchCount
-  );
+  const attempts =
+    buildImageAttempts(
+      query,
+      config,
+      offset,
+      fetchCount
+    );
 
   let best = null;
   let bestScore = -1;
 
   const errors = [];
 
-  // Semua strategi dijalankan jika diperlukan.
-  // Tidak berhenti sebelum fallback en-US dicoba.
-  for (const attempt of attempts) {
+  for (
+    const attempt of attempts
+  ) {
     try {
-      const r = await runImageAttempt(
-        attempt,
-        query,
-        limit,
-        offset
-      );
+      const r =
+        await runImageAttempt(
+          attempt,
+          query,
+          limit,
+          offset
+        );
 
       if (r.blocked) {
         throw new Error(
@@ -1294,7 +1576,9 @@ async function fetchImagesBing(
         );
       }
 
-      if (r.images.length === 0) {
+      if (
+        r.images.length === 0
+      ) {
         throw new Error(
           `EMPTY (${attempt.name}, HTML ${r.htmlLength}B, title "${r.pageTitle}")`
         );
@@ -1305,17 +1589,24 @@ async function fetchImagesBing(
         `${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`
       );
 
-      if (r.score > bestScore) {
-        best = r.images;
-        bestScore = r.score;
+      if (
+        r.score > bestScore
+      ) {
+        best =
+          r.images;
+        bestScore =
+          r.score;
       }
 
-      if (r.score >= 0.2) {
+      if (
+        r.score >= 0.2
+      ) {
         return r.images;
       }
-
     } catch (err) {
-      errors.push(err.message);
+      errors.push(
+        err.message
+      );
 
       console.warn(
         `[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`
@@ -1323,7 +1614,10 @@ async function fetchImagesBing(
     }
   }
 
-  if (best && bestScore < 0.1) {
+  if (
+    best &&
+    bestScore < 0.1
+  ) {
     throw new Error(
       `IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak cukup relevan dengan "${query}".`
     );
@@ -1334,8 +1628,6 @@ async function fetchImagesBing(
       `BING_FAILED: ${errors.join(' | ')}`
     );
   }
-
-  best.lowRelevance = true;
 
   return best;
 }
@@ -1349,18 +1641,24 @@ async function fetchImages(
   const tries = 2;
   let lastErr = null;
 
-  for (let t = 1; t <= tries; t++) {
+  for (
+    let t = 1;
+    t <= tries;
+    t++
+  ) {
     try {
-      const out = await fetchImagesBing(
-        query,
-        config,
-        limit,
-        offset
+      const out =
+        await fetchImagesBing(
+          query,
+          config,
+          limit,
+          offset
+        );
+
+      trackSource(
+        'bing-images',
+        true
       );
-
-      trackSource('bing-images', true);
-
-      out.provider = 'bing-images';
 
       console.log(
         `[IMAGES] "${query}" berhasil via bing-images ` +
@@ -1368,7 +1666,6 @@ async function fetchImages(
       );
 
       return out;
-
     } catch (err) {
       lastErr = err;
 
@@ -1377,13 +1674,17 @@ async function fetchImages(
       );
 
       if (t < tries) {
-        // Cookie lama dibuang sebelum percobaan ulang.
         bingCookie = {
           value: '',
           at: 0
         };
 
-        await new Promise(r => setTimeout(r, 700));
+        await new Promise(
+          r => setTimeout(
+            r,
+            700
+          )
+        );
       }
     }
   }
@@ -1391,7 +1692,8 @@ async function fetchImages(
   trackSource(
     'bing-images',
     false,
-    lastErr?.message || 'Unknown error'
+    lastErr?.message ||
+      'Unknown error'
   );
 
   throw new Error(
@@ -1404,11 +1706,19 @@ async function fetchImages(
 // Bing News primer + Google News RSS fallback
 // ==========================================
 
-function buildBingNewsCookies(config) {
-  const region = config.gl.toUpperCase();
-  const lang = config.hl;
+function buildBingNewsCookies(
+  config
+) {
+  const region =
+    config.gl.toUpperCase();
 
-  return `_EDGE_CD=m=${region}&u=${lang}; _EDGE_S=mkt=${region}&ui=${lang}`;
+  const lang =
+    config.hl;
+
+  return (
+    `_EDGE_CD=m=${region}&u=${lang}; ` +
+    `_EDGE_S=mkt=${region}&ui=${lang}`
+  );
 }
 
 async function fetchNewsViaBing(
@@ -1420,7 +1730,8 @@ async function fetchNewsViaBing(
   try {
     const newsItems = [];
 
-    const first = offset + 1;
+    const first =
+      offset + 1;
 
     const bingNewsUrl =
       `https://www.bing.com/news/infinitescrollajax` +
@@ -1428,24 +1739,34 @@ async function fetchNewsViaBing(
       `&InfiniteScroll=1` +
       `&first=${first}`;
 
-    const res = await axios.get(
-      bingNewsUrl,
-      {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'id-ID,id;q=0.9,en;q=0.7',
-          'Referer': 'https://www.bing.com/news',
-          'Cookie': buildBingNewsCookies(config)
-        },
-        timeout: 10000,
-        maxContentLength: 5 * 1024 * 1024
-      }
-    );
+    const res =
+      await axios.get(
+        bingNewsUrl,
+        {
+          headers: {
+            'User-Agent':
+              getRandomUserAgent(),
+            'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language':
+              'id-ID,id;q=0.9,en;q=0.7',
+            'Referer':
+              'https://www.bing.com/news',
+            'Cookie':
+              buildBingNewsCookies(
+                config
+              )
+          },
+          timeout: 10000,
+          maxContentLength:
+            5 * 1024 * 1024
+        }
+      );
 
-    const html = typeof res.data === 'string'
-      ? res.data
-      : '';
+    const html =
+      typeof res.data === 'string'
+        ? res.data
+        : '';
 
     if (looksBlocked(html)) {
       throw new Error(
@@ -1453,95 +1774,147 @@ async function fetchNewsViaBing(
       );
     }
 
-    const $ = cheerio.load(html);
+    const $ =
+      cheerio.load(html);
 
-    let cards = $('div[class*="newsitem"]');
+    let cards =
+      $('div[class*="newsitem"]');
 
     if (cards.length === 0) {
-      cards = $('[url][class*="news"]');
+      cards =
+        $('[url][class*="news"]');
     }
 
     cards.each((_, el) => {
-      if (newsItems.length >= limit) {
+      if (
+        newsItems.length >=
+        limit
+      ) {
         return false;
       }
 
       const $el = $(el);
 
-      const link = normalizeUrl(
-        $el.attr('url') ||
-        $el.find('a.title').first().attr('href')
-      );
+      const link =
+        normalizeUrl(
+          $el.attr('url') ||
+          $el
+            .find('a.title')
+            .first()
+            .attr('href')
+        );
 
-      const title = $el
-        .find('.caption a.title, a.title')
-        .first()
-        .text()
-        .trim();
+      const title =
+        $el
+          .find(
+            '.caption a.title, a.title'
+          )
+          .first()
+          .text()
+          .trim();
 
-      if (!title || !link) return;
+      if (!title || !link) {
+        return;
+      }
 
-      const snippet = $el
-        .find('.snippet')
-        .first()
-        .text()
-        .trim();
+      const snippet =
+        $el
+          .find('.snippet')
+          .first()
+          .text()
+          .trim();
 
-      const sourceSpans = $el.find('.source span');
+      const sourceSpans =
+        $el.find('.source span');
 
-      const metadataText = sourceSpans
-        .map((i, s) => $(s).text().trim())
-        .get()
-        .filter(Boolean)
-        .join(' · ');
+      const metadataText =
+        sourceSpans
+          .map(
+            (i, s) =>
+              $(s)
+                .text()
+                .trim()
+          )
+          .get()
+          .filter(Boolean)
+          .join(' · ');
 
-      const publisher = sourceSpans
-        .first()
-        .text()
-        .trim();
+      const publisher =
+        sourceSpans
+          .first()
+          .text()
+          .trim();
 
-      const img = $el
-        .find('a.imagelink img, img')
-        .first();
+      const img =
+        $el
+          .find(
+            'a.imagelink img, img'
+          )
+          .first();
 
-      const thumbnail = normalizeUrl(
-        img.attr('src') ||
-        img.attr('data-src') ||
-        img.attr('data-original')
-      );
+      const thumbnail =
+        normalizeUrl(
+          img.attr('src') ||
+          img.attr('data-src') ||
+          img.attr('data-original')
+        );
 
       let domain = '';
 
       try {
-        domain = new URL(link)
-          .hostname
-          .replace(/^www\./, '');
+        domain =
+          new URL(link)
+            .hostname
+            .replace(
+              /^www\./,
+              ''
+            );
       } catch (e) {}
 
       newsItems.push({
         title,
         link,
-        snippet: snippet || 'Tidak ada deskripsi.',
-        publisher: publisher || domain || 'Berita',
+        snippet:
+          snippet ||
+          'Tidak ada deskripsi.',
+        publisher:
+          publisher ||
+          domain ||
+          'Berita',
         domain,
-        thumbnailUrl: thumbnail,
-        publishedAt: metadataText || null,
-        position: offset + newsItems.length + 1
+        thumbnailUrl:
+          thumbnail,
+        publishedAt:
+          metadataText ||
+          null,
+        position:
+          offset +
+          newsItems.length +
+          1
       });
     });
 
-    if (newsItems.length === 0) {
+    if (
+      newsItems.length === 0
+    ) {
       throw new Error(
         'EMPTY_RESULT: Struktur berita Bing tidak ditemukan atau markup berubah.'
       );
     }
 
-    trackSource('bing-news', true);
+    trackSource(
+      'bing-news',
+      true
+    );
 
     return newsItems;
-
   } catch (err) {
-    trackSource('bing-news', false, err.message);
+    trackSource(
+      'bing-news',
+      false,
+      err.message
+    );
+
     throw err;
   }
 }
@@ -1562,105 +1935,158 @@ async function fetchNewsViaGoogleRss(
       `&gl=${config.gl.toUpperCase()}` +
       `&ceid=${config.gl.toUpperCase()}:${config.hl}`;
 
-    const response = await axios.get(
-      rssUrl,
-      {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept': 'application/rss+xml, application/xml, text/xml, */*'
-        },
-        timeout: 12000,
-        responseType: 'text',
-        maxContentLength: 5 * 1024 * 1024
-      }
-    );
+    const response =
+      await axios.get(
+        rssUrl,
+        {
+          headers: {
+            'User-Agent':
+              getRandomUserAgent(),
+            'Accept':
+              'application/rss+xml, application/xml, text/xml, */*'
+          },
+          timeout: 12000,
+          responseType: 'text',
+          maxContentLength:
+            5 * 1024 * 1024
+        }
+      );
 
-    const feed = await rssParser.parseString(
-      response.data
-    );
+    const feed =
+      await rssParser.parseString(
+        response.data
+      );
 
-    const rawItems = feed.items || [];
+    const rawItems =
+      feed.items || [];
 
-    const pagedItems = rawItems.slice(
-      offset,
-      offset + limit
-    );
+    const pagedItems =
+      rawItems.slice(
+        offset,
+        offset + limit
+      );
 
-    if (pagedItems.length === 0) {
+    if (
+      pagedItems.length === 0
+    ) {
       throw new Error(
         'EMPTY_RESULT: RSS Google News kosong.'
       );
     }
 
-    for (const item of pagedItems) {
-      if (!item.title || !item.link) {
+    for (
+      const item of pagedItems
+    ) {
+      if (
+        !item.title ||
+        !item.link
+      ) {
         continue;
       }
 
       let thumbnail = null;
 
-      if (item.mediaThumbnail?.$?.url) {
-        thumbnail = item.mediaThumbnail.$.url;
-      } else if (item.mediaContent?.$?.url) {
-        thumbnail = item.mediaContent.$.url;
+      if (
+        item.mediaThumbnail?.$?.url
+      ) {
+        thumbnail =
+          item.mediaThumbnail.$.url;
+      } else if (
+        item.mediaContent?.$?.url
+      ) {
+        thumbnail =
+          item.mediaContent.$.url;
       } else {
-        thumbnail = extractImageFromHtml(
-          item.content ||
-          item.snippet ||
-          item.summary
-        );
+        thumbnail =
+          extractImageFromHtml(
+            item.content ||
+            item.snippet ||
+            item.summary
+          );
       }
 
-      let sourceName = item.source || 'Berita';
+      let sourceName =
+        item.source ||
+        'Berita';
 
       if (
-        typeof sourceName === 'object' &&
+        typeof sourceName ===
+          'object' &&
         sourceName._
       ) {
-        sourceName = sourceName._;
+        sourceName =
+          sourceName._;
       }
 
       let domain = '';
 
       try {
-        domain = new URL(item.link)
-          .hostname
-          .replace(/^www\./, '');
+        domain =
+          new URL(item.link)
+            .hostname
+            .replace(
+              /^www\./,
+              ''
+            );
       } catch (e) {}
 
       const cleanSnippet =
         item.contentSnippet ||
         (
           item.content
-            ? cheerio.load(item.content).text()
+            ? cheerio
+                .load(
+                  item.content
+                )
+                .text()
             : ''
         );
 
       newsItems.push({
-        title: item.title.replace(/ - [^-]+$/, ''),
+        title:
+          item.title.replace(
+            / - [^-]+$/,
+            ''
+          ),
         link: item.link,
-        snippet: cleanSnippet.trim(),
+        snippet:
+          cleanSnippet.trim(),
         publisher: sourceName,
         domain,
-        thumbnailUrl: thumbnail,
-        publishedAt: item.pubDate || item.isoDate || null,
-        position: offset + newsItems.length + 1,
-        _isFallbackSource: true
+        thumbnailUrl:
+          thumbnail,
+        publishedAt:
+          item.pubDate ||
+          item.isoDate ||
+          null,
+        position:
+          offset +
+          newsItems.length +
+          1
       });
     }
 
-    if (newsItems.length === 0) {
+    if (
+      newsItems.length === 0
+    ) {
       throw new Error(
         'EMPTY_RESULT: Semua item RSS kosong setelah filter.'
       );
     }
 
-    trackSource('google-news-rss', true);
+    trackSource(
+      'google-news-rss',
+      true
+    );
 
     return newsItems;
-
   } catch (err) {
-    trackSource('google-news-rss', false, err.message);
+    trackSource(
+      'google-news-rss',
+      false,
+      err.message
+    );
+
     throw err;
   }
 }
@@ -1678,7 +2104,6 @@ async function fetchNews(
       limit,
       offset
     );
-
   } catch (bingErr) {
     console.warn(
       `[FALLBACK] Bing News gagal (${bingErr.message}), mencoba Google News RSS...`
@@ -1691,14 +2116,15 @@ async function fetchNews(
         limit,
         offset
       );
-
     } catch (rssErr) {
       alertEcosystem(
         'FATAL',
         'Semua sumber berita (Bing + Google RSS) gagal total',
         {
-          bingError: bingErr.message,
-          rssError: rssErr.message,
+          bingError:
+            bingErr.message,
+          rssError:
+            rssErr.message,
           query
         }
       );
@@ -1715,11 +2141,18 @@ async function fetchNews(
 // ==========================================
 
 function getCache(key) {
-  const entry = cache.get(key);
+  const entry =
+    cache.get(key);
 
-  if (!entry) return null;
+  if (!entry) {
+    return null;
+  }
 
-  if (Date.now() - entry.timestamp >= CACHE_TTL) {
+  if (
+    Date.now() -
+      entry.timestamp >=
+    CACHE_TTL
+  ) {
     cache.delete(key);
     return null;
   }
@@ -1727,19 +2160,28 @@ function getCache(key) {
   return entry;
 }
 
-function setCache(key, data) {
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
+function setCache(
+  key,
+  data
+) {
+  if (
+    cache.size >= CACHE_MAX
+  ) {
+    const oldest =
+      cache.keys().next().value;
 
     if (oldest) {
       cache.delete(oldest);
     }
   }
 
-  cache.set(key, {
-    timestamp: Date.now(),
-    data
-  });
+  cache.set(
+    key,
+    {
+      timestamp: Date.now(),
+      data
+    }
+  );
 }
 
 // ==========================================
@@ -1747,302 +2189,413 @@ function setCache(key, data) {
 // GET /api/search
 // ==========================================
 
-app.get('/api/search', async (req, res) => {
-  const startTime = Date.now();
+app.get(
+  '/api/search',
+  async (req, res) => {
+    const startTime =
+      Date.now();
 
-  const query = typeof req.query.q === 'string'
-    ? req.query.q.trim()
-    : '';
+    const query =
+      typeof req.query.q ===
+        'string'
+        ? req.query.q.trim()
+        : '';
 
-  const searchType = (
-    typeof req.query.type === 'string'
-      ? req.query.type
-      : 'search'
-  ).toLowerCase();
+    const searchType = (
+      typeof req.query.type ===
+        'string'
+        ? req.query.type
+        : 'search'
+    ).toLowerCase();
 
-  if (!query) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Parameter "q" wajib diisi.'
-    });
-  }
+    if (!query) {
+      return res.status(400).json({
+        status: 'error',
+        message:
+          'Parameter "q" wajib diisi.'
+      });
+    }
 
-  if (query.length > 500) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Query terlalu panjang. Maksimal 500 karakter.'
-    });
-  }
-
-  if (!['search', 'images', 'news'].includes(searchType)) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Parameter type hanya mendukung search, images, atau news.'
-    });
-  }
-
-  // Jumlah hasil otomatis.
-  // Parameter num dari URL sengaja tidak digunakan.
-  const defaultLimit = {
-    search: 10,
-    images: 20,
-    news: 15
-  };
-
-  const limit = defaultLimit[searchType];
-
-  // Pagination tetap tersedia melalui start atau page.
-  // Parameter hl/gl tidak diperlukan.
-  let offset = 0;
-
-  if (req.query.start !== undefined) {
-    offset = Math.max(
-      0,
-      parseInt(req.query.start, 10) || 0
-    );
-  } else if (req.query.page !== undefined) {
-    const page = Math.max(
-      1,
-      parseInt(req.query.page, 10) || 1
-    );
-
-    offset = (page - 1) * limit;
-  }
-
-  // Batasi offset agar tidak terlalu besar.
-  offset = Math.min(offset, 10000);
-
-  const config = resolveLanguageConfig();
-
-  const cacheKey =
-    `${searchType}_${query.toLowerCase()}_` +
-    `${config.hl}_${config.gl}_${limit}_start${offset}`;
-
-  const staleEntry = getCache(cacheKey);
-
-  if (staleEntry) {
-    return res.json(staleEntry.data);
-  }
-
-  try {
-    let results = [];
-
-    if (searchType === 'images') {
-      results = await fetchImages(
-        query,
-        config,
-        limit,
-        offset
-      );
-
-    } else if (searchType === 'news') {
-      results = await fetchNews(
-        query,
-        config,
-        limit,
-        offset
-      );
-
-    } else {
-      results = await fetchWebResults(
-        query,
-        config,
-        limit,
-        offset
-      );
+    if (query.length > 500) {
+      return res.status(400).json({
+        status: 'error',
+        message:
+          'Query terlalu panjang. Maksimal 500 karakter.'
+      });
     }
 
     if (
-      searchType !== 'images' &&
-      results.length > 0
+      ![
+        'search',
+        'images',
+        'news'
+      ].includes(searchType)
     ) {
-      results = await finalizeLinks(results);
-    }
-
-    if (results.length === 0) {
-      return res.status(502).json({
+      return res.status(400).json({
         status: 'error',
         message:
-          'Hasil pencarian kosong. Server mungkin diblokir penyedia pencarian atau struktur HTML berubah.',
+          'Parameter type hanya mendukung search, images, atau news.'
+      });
+    }
+
+    const defaultLimit = {
+      search: 10,
+      images: 20,
+      news: 15
+    };
+
+    const limit =
+      defaultLimit[
+        searchType
+      ];
+
+    let offset = 0;
+
+    if (
+      req.query.start !==
+      undefined
+    ) {
+      offset = Math.max(
+        0,
+        parseInt(
+          req.query.start,
+          10
+        ) || 0
+      );
+    } else if (
+      req.query.page !==
+      undefined
+    ) {
+      const page =
+        Math.max(
+          1,
+          parseInt(
+            req.query.page,
+            10
+          ) || 1
+        );
+
+      offset =
+        (page - 1) *
+        limit;
+    }
+
+    offset =
+      Math.min(
+        offset,
+        10000
+      );
+
+    const config =
+      resolveLanguageConfig();
+
+    const cacheKey =
+      `${searchType}_${query.toLowerCase()}_` +
+      `${config.hl}_${config.gl}_${limit}_start${offset}`;
+
+    const staleEntry =
+      getCache(cacheKey);
+
+    if (staleEntry) {
+      return res.json(
+        staleEntry.data
+      );
+    }
+
+    try {
+      let results = [];
+
+      if (
+        searchType ===
+        'images'
+      ) {
+        results =
+          await fetchImages(
+            query,
+            config,
+            limit,
+            offset
+          );
+      } else if (
+        searchType ===
+        'news'
+      ) {
+        results =
+          await fetchNews(
+            query,
+            config,
+            limit,
+            offset
+          );
+      } else {
+        results =
+          await fetchWebResults(
+            query,
+            config,
+            limit,
+            offset
+          );
+      }
+
+      if (
+        searchType !==
+          'images' &&
+        results.length > 0
+      ) {
+        results =
+          await finalizeLinks(
+            results
+          );
+      }
+
+      if (
+        results.length === 0
+      ) {
+        return res
+          .status(502)
+          .json({
+            status: 'error',
+            message:
+              'Hasil pencarian kosong. Server mungkin diblokir penyedia pencarian atau struktur HTML berubah.',
+            searchParameters: {
+              q: query,
+              type: searchType,
+              start: offset
+            }
+          });
+      }
+
+      const searchTime = (
+        (Date.now() -
+          startTime) /
+        1000
+      ).toFixed(2);
+
+      const responsePayload = {
+        status: 'success',
+
         searchParameters: {
           q: query,
           type: searchType,
-          start: offset
-        }
-      });
+          hl: config.hl,
+          gl: config.gl,
+          num: limit,
+          start: offset,
+          page:
+            Math.floor(
+              offset / limit
+            ) + 1
+        },
+
+        searchInformation: {
+          formattedSearchTime:
+            searchTime,
+          totalResults:
+            results.length
+        },
+
+        provider:
+          results.provider ||
+          undefined,
+
+        results,
+
+        images:
+          searchType ===
+          'images'
+            ? results
+            : undefined,
+
+        items:
+          searchType ===
+          'search'
+            ? results
+            : undefined,
+
+        news:
+          searchType ===
+          'news'
+            ? results
+            : undefined
+      };
+
+      setCache(
+        cacheKey,
+        responsePayload
+      );
+
+      return res.json(
+        responsePayload
+      );
+    } catch (error) {
+      console.error(
+        `[API ERROR] Type=${searchType}:`,
+        error.message
+      );
+
+      if (staleEntry) {
+        return res.json({
+          ...staleEntry.data,
+          stale: true
+        });
+      }
+
+      let statusCode = 500;
+
+      let customMessage =
+        'Terjadi kesalahan pada server backend.';
+
+      if (
+        error.message.startsWith(
+          'BING_IMAGE_SEARCH_FAILED'
+        ) ||
+        error.message.startsWith(
+          'IRRELEVANT_RESULT'
+        )
+      ) {
+        statusCode = 502;
+
+        customMessage =
+          'Bing Images gagal mengembalikan hasil gambar yang valid saat ini. Coba lagi beberapa saat.';
+      } else if (
+        error.message.startsWith(
+          'ALL_NEWS_SOURCES_FAILED'
+        )
+      ) {
+        statusCode = 502;
+
+        customMessage =
+          'Semua sumber berita (primer dan fallback) gagal.';
+      } else if (
+        error.code ===
+          'ECONNABORTED' ||
+        error.message
+          .toLowerCase()
+          .includes('timeout')
+      ) {
+        statusCode = 504;
+
+        customMessage =
+          'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat atau terputus.';
+      } else if (
+        error.message.includes(
+          'BLOCKED_CAPTCHA'
+        )
+      ) {
+        statusCode = 429;
+
+        customMessage =
+          'IP server terdeteksi sebagai trafik otomatis atau diminta verifikasi oleh Bing.';
+      } else if (
+        error.response
+      ) {
+        statusCode =
+          error.response.status ||
+          502;
+
+        customMessage =
+          `Penyedia pencarian mengembalikan status error ${statusCode}.`;
+      }
+
+      return res
+        .status(statusCode)
+        .json({
+          status: 'error',
+          message:
+            customMessage,
+          error_detail:
+            error.message
+        });
     }
-
-    const searchTime = (
-      (Date.now() - startTime) / 1000
-    ).toFixed(2);
-
-    const responsePayload = {
-      status: 'success',
-
-      searchParameters: {
-        q: query,
-        type: searchType,
-        hl: config.hl,
-        gl: config.gl,
-        num: limit,
-        start: offset,
-        page: Math.floor(offset / limit) + 1
-      },
-
-      searchInformation: {
-        formattedSearchTime: searchTime,
-        totalResults: results.length
-      },
-
-      provider: results.provider || undefined,
-
-      results,
-
-      images: searchType === 'images'
-        ? results
-        : undefined,
-
-      items: searchType === 'search'
-        ? results
-        : undefined,
-
-      news: searchType === 'news'
-        ? results
-        : undefined
-    };
-
-    if (!results.lowRelevance) {
-      setCache(cacheKey, responsePayload);
-    }
-
-    return res.json(responsePayload);
-
-  } catch (error) {
-    console.error(
-      `[API ERROR] Type=${searchType}:`,
-      error.message
-    );
-
-    // Jika sebelumnya ada data cache, tetap berikan data lama.
-    if (staleEntry) {
-      return res.json({
-        ...staleEntry.data,
-        stale: true
-      });
-    }
-
-    let statusCode = 500;
-
-    let customMessage =
-      'Terjadi kesalahan pada server backend.';
-
-    if (
-      error.message.startsWith('BING_IMAGE_SEARCH_FAILED') ||
-      error.message.startsWith('IRRELEVANT_RESULT')
-    ) {
-      statusCode = 502;
-
-      customMessage =
-        'Bing Images gagal mengembalikan hasil gambar yang valid saat ini. Coba lagi beberapa saat.';
-
-    } else if (
-      error.message.startsWith('ALL_NEWS_SOURCES_FAILED')
-    ) {
-      statusCode = 502;
-
-      customMessage =
-        'Semua sumber berita (primer dan fallback) gagal.';
-
-    } else if (
-      error.code === 'ECONNABORTED' ||
-      error.message.toLowerCase().includes('timeout')
-    ) {
-      statusCode = 504;
-
-      customMessage =
-        'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat atau terputus.';
-
-    } else if (
-      error.message.includes('BLOCKED_CAPTCHA')
-    ) {
-      statusCode = 429;
-
-      customMessage =
-        'IP server terdeteksi sebagai trafik otomatis atau diminta verifikasi oleh Bing.';
-
-    } else if (error.response) {
-      statusCode = error.response.status || 502;
-
-      customMessage =
-        `Penyedia pencarian mengembalikan status error ${statusCode}.`;
-    }
-
-    return res.status(statusCode).json({
-      status: 'error',
-      message: customMessage,
-      error_detail: error.message
-    });
   }
-});
+);
 
 // ==========================================
 // 6. SOURCE STATUS
 // GET /api/status
 // ==========================================
 
-app.get('/api/status', (req, res) => {
-  res.json({
-    status: 'success',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    sources: sourceStats,
-    cache: {
-      entries: cache.size,
-      maxEntries: CACHE_MAX,
-      ttlMs: CACHE_TTL
-    },
-    linkCache: {
-      entries: linkCache.size,
-      maxEntries: LINK_CACHE_MAX
-    }
-  });
-});
+app.get(
+  '/api/status',
+  (req, res) => {
+    res.json({
+      status: 'success',
+      uptime:
+        process.uptime(),
+      timestamp:
+        new Date().toISOString(),
+
+      sources:
+        sourceStats,
+
+      cache: {
+        entries:
+          cache.size,
+        maxEntries:
+          CACHE_MAX,
+        ttlMs:
+          CACHE_TTL
+      },
+
+      linkCache: {
+        entries:
+          linkCache.size,
+        maxEntries:
+          LINK_CACHE_MAX
+      }
+    });
+  }
+);
 
 // ==========================================
 // 7. ROOT
 // ==========================================
 
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Search API',
-    status: 'online',
-    endpoints: {
-      search: '/api/search?q=Google',
-      images: '/api/search?q=kucing&type=images',
-      news: '/api/search?q=teknologi&type=news',
-      status: '/api/status'
-    }
-  });
-});
+app.get(
+  '/',
+  (req, res) => {
+    res.json({
+      name: 'Search API',
+      status: 'online',
+
+      endpoints: {
+        search:
+          '/api/search?q=Google',
+
+        images:
+          '/api/search?q=kucing&type=images',
+
+        news:
+          '/api/search?q=teknologi&type=news',
+
+        status:
+          '/api/status'
+      }
+    });
+  }
+);
 
 // ==========================================
 // START SERVER
 // ==========================================
 
-app.listen(PORT, () => {
-  console.log(
-    `Server API berjalan di http://localhost:${PORT}`
-  );
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Server API berjalan di http://localhost:${PORT}`
+    );
 
-  console.log(
-    '[CONFIG] Bahasa default: Indonesia (id-ID)'
-  );
+    console.log(
+      '[CONFIG] Bahasa default: Indonesia (id-ID)'
+    );
 
-  console.log(
-    '[CONFIG] Limit: search=10, images=20, news=15'
-  );
+    console.log(
+      '[CONFIG] Limit: search=10, images=20, news=15'
+    );
 
-  console.log(
-    '[CONFIG] Parameter num, hl, gl tidak diperlukan.'
-  );
-});
+    console.log(
+      '[CONFIG] Parameter num, hl, gl tidak diperlukan.'
+    );
+  }
+);
