@@ -591,73 +591,225 @@ function relevanceScore(images, query) {
 }
 
 function safeParseInt(val) {
-  if (!val) return 0;
+  if (val === undefined || val === null || val === '') {
+    return 0;
+  }
 
-  const num = parseInt(
-    String(val).replace(/[^\d]/g, ''),
-    10
-  );
+  const match = String(val).match(/\d+/);
 
-  return isNaN(num) ? 0 : num;
+  if (!match) return 0;
+
+  const num = parseInt(match[0], 10);
+
+  return Number.isFinite(num) ? num : 0;
 }
 
-function extractDimensions(mData, $el) {
-  let w = safeParseInt(
-    mData.tw ||
-    mData.thumbWidth ||
-    mData.mw ||
-    mData.w ||
-    mData.ow ||
-    mData.width
-  );
+function extractDimensions(mData, $el, rawM = '') {
+  let width = 0;
+  let height = 0;
 
-  let h = safeParseInt(
-    mData.th ||
-    mData.thumbHeight ||
-    mData.mh ||
-    mData.h ||
-    mData.oh ||
-    mData.height
-  );
+  // ==========================================
+  // 1. PRIORITAS UTAMA: METADATA ASLI BING
+  // ==========================================
 
-  if (!w || !h) {
-    const dataDim =
-      $el.attr('data-dim') ||
-      $el.find('img').attr('data-dim') ||
-      '';
+  const originalWidthFields = [
+    mData?.ow,
+    mData?.originalWidth,
+    mData?.original_width,
+    mData?.imageWidth,
+    mData?.image_width
+  ];
 
-    if (dataDim) {
-      const match = dataDim.match(
-        /(\d+)\s*[x×]\s*(\d+)/i
-      );
+  const originalHeightFields = [
+    mData?.oh,
+    mData?.originalHeight,
+    mData?.original_height,
+    mData?.imageHeight,
+    mData?.image_height
+  ];
 
-      if (match) {
-        if (!w) w = safeParseInt(match[1]);
-        if (!h) h = safeParseInt(match[2]);
+  for (const value of originalWidthFields) {
+    const n = safeParseInt(value);
+
+    if (n > 0) {
+      width = n;
+      break;
+    }
+  }
+
+  for (const value of originalHeightFields) {
+    const n = safeParseInt(value);
+
+    if (n > 0) {
+      height = n;
+      break;
+    }
+  }
+
+  // ==========================================
+  // 2. CARI FIELD UKURAN LAIN DI METADATA
+  // HANYA JIKA UKURAN ASLI BELUM LENGKAP
+  // ==========================================
+
+  if (!width) {
+    const fields = [
+      mData?.w,
+      mData?.width,
+      mData?.image?.width,
+      mData?.imageInfo?.width,
+      mData?.metadata?.width
+    ];
+
+    for (const value of fields) {
+      const n = safeParseInt(value);
+
+      if (n > 0) {
+        width = n;
+        break;
       }
     }
   }
 
-  if ((!w || !h) && mData.murl) {
-    const originalWidth = safeParseInt(mData.ow || mData.w);
-    const originalHeight = safeParseInt(mData.oh || mData.h);
+  if (!height) {
+    const fields = [
+      mData?.h,
+      mData?.height,
+      mData?.image?.height,
+      mData?.imageInfo?.height,
+      mData?.metadata?.height
+    ];
 
-    const ratio = originalWidth && originalHeight
-      ? originalWidth / originalHeight
-      : null;
+    for (const value of fields) {
+      const n = safeParseInt(value);
 
-    if (ratio) {
-      if (w && !h) {
-        h = Math.round(w / ratio);
-      } else if (h && !w) {
-        w = Math.round(h * ratio);
+      if (n > 0) {
+        height = n;
+        break;
+      }
+    }
+  }
+
+  // ==========================================
+  // 3. CARI FORMAT "1920x1080" DI METADATA
+  // ==========================================
+
+  if (!width || !height) {
+    const sources = [
+      mData?.dim,
+      mData?.dimensions,
+      mData?.size,
+      mData?.resolution,
+      mData?.imageSize,
+      mData?.imageDimensions
+    ];
+
+    for (const value of sources) {
+      if (!value) continue;
+
+      const match = String(value).match(
+        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+      );
+
+      if (match) {
+        if (!width) {
+          width = parseInt(match[1], 10);
+        }
+
+        if (!height) {
+          height = parseInt(match[2], 10);
+        }
+
+        if (width && height) break;
+      }
+    }
+  }
+
+  // ==========================================
+  // 4. CARI LANGSUNG DI RAW ATTRIBUTE m
+  // ==========================================
+
+  if ((!width || !height) && rawM) {
+    const raw = decodeEntities(String(rawM));
+
+    const widthMatch =
+      raw.match(/["'](?:ow|originalWidth|imageWidth|width)["']\s*:\s*["']?(\d{2,6})/i);
+
+    const heightMatch =
+      raw.match(/["'](?:oh|originalHeight|imageHeight|height)["']\s*:\s*["']?(\d{2,6})/i);
+
+    if (!width && widthMatch) {
+      width = parseInt(widthMatch[1], 10);
+    }
+
+    if (!height && heightMatch) {
+      height = parseInt(heightMatch[1], 10);
+    }
+
+    // Coba pasangan ukuran seperti 1920x1080
+    if (!width || !height) {
+      const dimMatch = raw.match(
+        /(?:dimensions?|resolution|size|imageSize|dim)["']?\s*[:=]\s*["']?(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+      );
+
+      if (dimMatch) {
+        if (!width) {
+          width = parseInt(dimMatch[1], 10);
+        }
+
+        if (!height) {
+          height = parseInt(dimMatch[2], 10);
+        }
+      }
+    }
+  }
+
+  // ==========================================
+  // 5. FALLBACK DARI ATTRIBUTE HTML
+  // ==========================================
+
+  if ($el && typeof $el.attr === 'function') {
+    const attrs = [
+      $el.attr('data-dim'),
+      $el.attr('data-size'),
+      $el.attr('data-resolution'),
+      $el.attr('data-image-dim'),
+      $el.attr('data-image-size')
+    ];
+
+    const img = $el.find('img').first();
+
+    attrs.push(
+      img.attr('data-dim'),
+      img.attr('data-size'),
+      img.attr('data-resolution'),
+      img.attr('data-image-dim'),
+      img.attr('data-image-size')
+    );
+
+    for (const value of attrs) {
+      if (!value) continue;
+
+      const match = String(value).match(
+        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+      );
+
+      if (match) {
+        if (!width) {
+          width = parseInt(match[1], 10);
+        }
+
+        if (!height) {
+          height = parseInt(match[2], 10);
+        }
+
+        if (width && height) break;
       }
     }
   }
 
   return {
-    width: w || null,
-    height: h || null
+    width: width || null,
+    height: height || null
   };
 }
 
@@ -749,7 +901,7 @@ function parseImageMetadata(raw) {
   return null;
 }
 
-function buildImage(d, $el, offset, count, query) {
+function buildImage(d, $el, offset, count, query, rawM = '') {
   const imageUrl = normalizeUrl(d.murl);
   const thumbnailUrl = normalizeUrl(d.turl);
   const targetLink = normalizeUrl(d.purl);
@@ -770,42 +922,31 @@ function buildImage(d, $el, offset, count, query) {
 
   const dims = extractDimensions(
     d,
-    $el || NO_EL
+    $el || NO_EL,
+    rawM
   );
 
-  let rawHtml = '';
-
-  try {
-    rawHtml = cheerio
-      .html($el || '')
-      .slice(0, 8000);
-  } catch (e) {
-    rawHtml = '';
-  }
-
   return {
-    title: String(title).replace(/<[^>]+>/g, ''),
+    title: String(title)
+      .replace(/<[^>]+>/g, '')
+      .trim(),
+
     image: imageUrl,
     imageUrl,
+
     thumbnail: thumbnailUrl || imageUrl,
     thumbnailUrl: thumbnailUrl || imageUrl,
 
     width: dims.width,
     height: dims.height,
-    imageWidth: dims.width,
-    imageHeight: dims.height,
 
-    source: domain || 'bing',
-    domain: domain || 'bing',
+    source: domain || '',
+    domain: domain || '',
+
     pageUrl: targetLink || imageUrl,
     link: targetLink || imageUrl,
 
-    position: offset + count + 1,
-
-    _debug: {
-      rawMetadata: d,
-      rawHtml
-    }
+    position: offset + count + 1
   };
 }
 
@@ -840,13 +981,16 @@ function parseBingImagesRaw(
 
     seen.add(imageUrl);
 
+    
+
     const built = buildImage(
-      d,
-      $el,
-      offset,
-      images.length,
-      query
-    );
+  d,
+  $el,
+  offset,
+  images.length,
+  query,
+  rawM
+);
 
     if (built) {
       images.push(built);
@@ -856,12 +1000,13 @@ function parseBingImagesRaw(
   return images;
 }
 
-function parseBingImageCards(
-  $,
-  html,
-  limit,
+const built = buildImage(
+  d,
+  $el,
   offset,
-  query
+  images.length,
+  query,
+  mAttr
 ) {
   const images = [];
   const seen = new Set();
