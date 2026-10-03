@@ -1,4 +1,3 @@
-
 import express from 'express';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -15,7 +14,10 @@ app.use((req, res, next) => {
     'Access-Control-Allow-Headers',
     'Origin, X-Requested-With, Content-Type, Accept'
   );
-  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header(
+    'Access-Control-Allow-Methods',
+    'GET, OPTIONS'
+  );
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -104,7 +106,11 @@ function extractImageFromHtml(htmlSnippet) {
 
 const sourceStats = {};
 
-function alertEcosystem(level, message, meta = {}) {
+function alertEcosystem(
+  level,
+  message,
+  meta = {}
+) {
   const payload = {
     level,
     message,
@@ -118,29 +124,39 @@ function alertEcosystem(level, message, meta = {}) {
   );
 }
 
-function trackSource(name, ok, errMsg = null) {
-  const s = sourceStats[name] || (
-    sourceStats[name] = {
-      success: 0,
-      failure: 0,
-      consecutiveFailures: 0,
-      lastError: null,
-      lastSuccessAt: null,
-      lastFailureAt: null
-    }
-  );
+function trackSource(
+  name,
+  ok,
+  errMsg = null
+) {
+  const s =
+    sourceStats[name] ||
+    (
+      sourceStats[name] = {
+        success: 0,
+        failure: 0,
+        consecutiveFailures: 0,
+        lastError: null,
+        lastSuccessAt: null,
+        lastFailureAt: null
+      }
+    );
 
   if (ok) {
     s.success++;
     s.consecutiveFailures = 0;
-    s.lastSuccessAt = new Date().toISOString();
+    s.lastSuccessAt =
+      new Date().toISOString();
   } else {
     s.failure++;
     s.consecutiveFailures++;
     s.lastError = errMsg;
-    s.lastFailureAt = new Date().toISOString();
+    s.lastFailureAt =
+      new Date().toISOString();
 
-    if (s.consecutiveFailures === 3) {
+    if (
+      s.consecutiveFailures === 3
+    ) {
       alertEcosystem(
         'WARN',
         `Sumber "${name}" gagal 3x berturut-turut`,
@@ -155,9 +171,11 @@ function trackSource(name, ok, errMsg = null) {
 // ==========================================
 
 function looksBlocked(html) {
-  if (typeof html !== 'string') return false;
+  if (typeof html !== 'string') {
+    return false;
+  }
 
-  return /captcha|unusual traffic|are you a robot|verify you are human|robot check|geetest|cf-browser-verification|challenge-platform|bingbot|automated queries|suspicious activity/i.test(
+  return /captcha|unusual traffic|are you a robot|verify you are human|robot check|geetest|cf-browser-verification|challenge-platform|automated queries|suspicious activity/i.test(
     html
   );
 }
@@ -228,7 +246,8 @@ function decodeBingParam(val) {
   }
 
   for (let k = 0; k <= 3; k++) {
-    const out = decodeBase64Url(val.slice(k));
+    const out =
+      decodeBase64Url(val.slice(k));
 
     if (
       out &&
@@ -243,16 +262,20 @@ function decodeBingParam(val) {
 
 function decodeGoogleNewsArticle(link) {
   try {
-    const pathname = new URL(link).pathname;
-    const m = pathname.match(
-      /\/articles\/([^/?]+)/
-    );
+    const pathname =
+      new URL(link).pathname;
+
+    const m =
+      pathname.match(
+        /\/articles\/([^/?]+)/
+      );
 
     if (!m) return null;
 
-    const encoded = m[1]
-      .replace(/-/g, '+')
-      .replace(/_/g, '/');
+    const encoded =
+      m[1]
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
 
     let padded = encoded;
 
@@ -260,15 +283,19 @@ function decodeGoogleNewsArticle(link) {
       padded += '=';
     }
 
-    const raw = Buffer
-      .from(padded, 'base64')
-      .toString('latin1');
+    const raw =
+      Buffer
+        .from(padded, 'base64')
+        .toString('latin1');
 
-    const found = raw.match(
-      /https?:\/\/[\x21-\x7e]+/
-    );
+    const found =
+      raw.match(
+        /https?:\/\/[\x21-\x7e]+/
+      );
 
-    return found ? found[0] : null;
+    return found
+      ? found[0]
+      : null;
   } catch (e) {
     return null;
   }
@@ -285,16 +312,28 @@ function resolveByParams(link) {
     let next = null;
 
     try {
-      const u = new URL(current);
+      const u =
+        new URL(current);
 
-      if (u.hostname === 'news.google.com') {
-        next = decodeGoogleNewsArticle(current);
+      if (
+        u.hostname ===
+        'news.google.com'
+      ) {
+        next =
+          decodeGoogleNewsArticle(
+            current
+          );
       }
 
       if (!next) {
-        for (const p of REDIRECT_PARAMS) {
-          const v = u.searchParams.get(p);
-          const decoded = decodeBingParam(v);
+        for (
+          const p of REDIRECT_PARAMS
+        ) {
+          const v =
+            u.searchParams.get(p);
+
+          const decoded =
+            decodeBingParam(v);
 
           if (
             decoded &&
@@ -328,29 +367,35 @@ async function resolveByHttp(link) {
     }
 
     try {
-      const res = await axios.get(
-        current,
-        {
-          headers: {
-            'User-Agent': getRandomUserAgent(),
-            'Accept': 'text/html,*/*;q=0.8'
-          },
-          timeout: 5000,
-          maxRedirects: 0,
-          responseType: 'text',
-          maxContentLength: 512 * 1024,
-          validateStatus: s => s < 400
-        }
-      );
+      const res =
+        await axios.get(
+          current,
+          {
+            headers: {
+              'User-Agent':
+                getRandomUserAgent(),
+              'Accept':
+                'text/html,*/*;q=0.8'
+            },
+            timeout: 5000,
+            maxRedirects: 0,
+            responseType: 'text',
+            maxContentLength:
+              512 * 1024,
+            validateStatus:
+              s => s < 400
+          }
+        );
 
       if (
         res.status >= 300 &&
         res.headers.location
       ) {
-        current = new URL(
-          res.headers.location,
-          current
-        ).toString();
+        current =
+          new URL(
+            res.headers.location,
+            current
+          ).toString();
 
         continue;
       }
@@ -375,24 +420,27 @@ async function resolveByHttp(link) {
         return null;
       }
 
-      const next = m[1]
-        .replace(/&amp;/g, '&')
-        .replace(/\\u0026/g, '&')
-        .replace(/\\\//g, '/');
+      const next =
+        m[1]
+          .replace(/&amp;/g, '&')
+          .replace(/\\u0026/g, '&')
+          .replace(/\\\//g, '/');
 
-      current = new URL(
-        next,
-        current
-      ).toString();
+      current =
+        new URL(
+          next,
+          current
+        ).toString();
     } catch (e) {
       const loc =
         e.response?.headers?.location;
 
       if (loc) {
-        current = new URL(
-          loc,
-          current
-        ).toString();
+        current =
+          new URL(
+            loc,
+            current
+          ).toString();
 
         continue;
       }
@@ -428,11 +476,16 @@ async function resolveLink(link) {
     return linkCache.get(link);
   }
 
-  let finalUrl = resolveByParams(link);
+  let finalUrl =
+    resolveByParams(link);
 
-  if (isSearchEngineUrl(finalUrl)) {
+  if (
+    isSearchEngineUrl(finalUrl)
+  ) {
     const viaHttp =
-      await resolveByHttp(finalUrl);
+      await resolveByHttp(
+        finalUrl
+      );
 
     if (viaHttp) {
       finalUrl = viaHttp;
@@ -441,10 +494,14 @@ async function resolveLink(link) {
 
   const result = {
     link: finalUrl,
-    resolved: !isSearchEngineUrl(finalUrl)
+    resolved:
+      !isSearchEngineUrl(finalUrl)
   };
 
-  if (linkCache.size >= LINK_CACHE_MAX) {
+  if (
+    linkCache.size >=
+    LINK_CACHE_MAX
+  ) {
     const oldest =
       linkCache.keys().next().value;
 
@@ -453,7 +510,10 @@ async function resolveLink(link) {
     }
   }
 
-  linkCache.set(link, result);
+  linkCache.set(
+    link,
+    result
+  );
 
   return result;
 }
@@ -469,33 +529,50 @@ async function finalizeLinks(
     i < out.length;
     i += concurrency
   ) {
-    const chunk = out.slice(
-      i,
-      i + concurrency
-    );
+    const chunk =
+      out.slice(
+        i,
+        i + concurrency
+      );
 
     await Promise.all(
-      chunk.map(async item => {
-        const original = item.link;
-        const r = await resolveLink(original);
+      chunk.map(
+        async item => {
+          const original =
+            item.link;
 
-        item.link = r.link;
-        item.linkResolved = r.resolved;
+          const r =
+            await resolveLink(
+              original
+            );
 
-        if (r.link !== original) {
-          try {
-            item.domain = new URL(r.link)
-              .hostname
-              .replace(/^www\./, '');
-          } catch (e) {}
+          item.link = r.link;
+          item.linkResolved =
+            r.resolved;
+
+          if (
+            r.link !== original
+          ) {
+            try {
+              item.domain =
+                new URL(r.link)
+                  .hostname
+                  .replace(
+                    /^www\./,
+                    ''
+                  );
+            } catch (e) {}
+          }
         }
-      })
+      )
     );
   }
 
-  const failed = out.filter(
-    i => i.linkResolved === false
-  ).length;
+  const failed =
+    out.filter(
+      i =>
+        i.linkResolved === false
+    ).length;
 
   if (failed > 0) {
     console.warn(
@@ -519,7 +596,8 @@ async function fetchWebResults(
   try {
     const items = [];
 
-    const firstIndex = offset + 1;
+    const firstIndex =
+      offset + 1;
 
     const bingWebUrl =
       `https://www.bing.com/search?q=${encodeURIComponent(query)}` +
@@ -527,23 +605,25 @@ async function fetchWebResults(
       `&setlang=${config.hl}` +
       `&first=${firstIndex}`;
 
-    const res = await axios.get(
-      bingWebUrl,
-      {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept':
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language':
-            'id-ID,id;q=0.9,en;q=0.7',
-          'Referer':
-            'https://www.bing.com/'
-        },
-        timeout: 10000,
-        maxContentLength:
-          5 * 1024 * 1024
-      }
-    );
+    const res =
+      await axios.get(
+        bingWebUrl,
+        {
+          headers: {
+            'User-Agent':
+              getRandomUserAgent(),
+            'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language':
+              'id-ID,id;q=0.9,en;q=0.7',
+            'Referer':
+              'https://www.bing.com/'
+          },
+          timeout: 10000,
+          maxContentLength:
+            5 * 1024 * 1024
+        }
+      );
 
     const html =
       typeof res.data === 'string'
@@ -556,57 +636,81 @@ async function fetchWebResults(
       );
     }
 
-    const $ = cheerio.load(html);
+    const $ =
+      cheerio.load(html);
 
-    $('li.b_algo').each((_, el) => {
-      if (items.length >= limit) {
-        return false;
+    $('li.b_algo').each(
+      (_, el) => {
+        if (
+          items.length >= limit
+        ) {
+          return false;
+        }
+
+        const titleEl =
+          $(el)
+            .find('h2 a')
+            .first();
+
+        const snippetEl =
+          $(el)
+            .find(
+              'div.b_caption p, p.b_lineclamp'
+            )
+            .first();
+
+        const title =
+          titleEl
+            .text()
+            .trim();
+
+        const link =
+          normalizeUrl(
+            titleEl.attr('href')
+          );
+
+        const snippet =
+          snippetEl
+            .text()
+            .trim();
+
+        if (
+          !title ||
+          !link
+        ) {
+          return;
+        }
+
+        let domain = '';
+
+        try {
+          domain =
+            new URL(link)
+              .hostname
+              .replace(
+                /^www\./,
+                ''
+              );
+        } catch (e) {}
+
+        items.push({
+          title,
+          link,
+          snippet:
+            snippet ||
+            'Tidak ada deskripsi.',
+          domain,
+          position:
+            offset +
+            items.length +
+            1
+        });
       }
+    );
 
-      const titleEl =
-        $(el).find('h2 a').first();
-
-      const snippetEl = $(el)
-        .find(
-          'div.b_caption p, p.b_lineclamp'
-        )
-        .first();
-
-      const title =
-        titleEl.text().trim();
-
-      const link = normalizeUrl(
-        titleEl.attr('href')
-      );
-
-      const snippet =
-        snippetEl.text().trim();
-
-      if (!title || !link) {
-        return;
-      }
-
-      let domain = '';
-
-      try {
-        domain = new URL(link)
-          .hostname
-          .replace(/^www\./, '');
-      } catch (e) {}
-
-      items.push({
-        title,
-        link,
-        snippet:
-          snippet ||
-          'Tidak ada deskripsi.',
-        domain,
-        position:
-          offset + items.length + 1
-      });
-    });
-
-    if (items.length === 0) {
+    if (
+      items.length === 0
+    ) {
       throw new Error(
         'EMPTY_RESULT: Tidak ada hasil web yang berhasil diparsing.'
       );
@@ -636,17 +740,11 @@ async function fetchWebResults(
 const NO_EL = {
   attr: () => '',
   find: () => ({
-    attr: () => '',
-    first: () => ({
-      attr: () => '',
-      text: () => ''
-    })
+    attr: () => ''
   }),
   closest: () => ({
     find: () => ({
-      first: () => ({
-        text: () => ''
-      })
+      text: () => ''
     })
   })
 };
@@ -655,11 +753,17 @@ function queryTokens(query) {
   return query
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
-    .filter(t => t.length >= 3);
+    .filter(
+      t => t.length >= 3
+    );
 }
 
-function relevanceScore(images, query) {
-  const tokens = queryTokens(query);
+function relevanceScore(
+  images,
+  query
+) {
+  const tokens =
+    queryTokens(query);
 
   if (
     tokens.length === 0 ||
@@ -672,11 +776,13 @@ function relevanceScore(images, query) {
 
   for (const img of images) {
     const hay =
-      `${img.title} ${img.pageUrl} ${img.imageUrl}`
+      `${img.title} ${img.pageUrl} ${img.imageUrl} ${img.source}`
         .toLowerCase();
 
     if (
-      tokens.some(t => hay.includes(t))
+      tokens.some(
+        t => hay.includes(t)
+      )
     ) {
       hits++;
     }
@@ -695,11 +801,17 @@ function safeParseInt(val) {
   }
 
   const match =
-    String(val).match(/\d+/);
+    String(val).match(
+      /\d+/
+    );
 
   if (!match) return 0;
 
-  const num = parseInt(match[0], 10);
+  const num =
+    parseInt(
+      match[0],
+      10
+    );
 
   return Number.isFinite(num)
     ? num
@@ -707,564 +819,139 @@ function safeParseInt(val) {
 }
 
 // ==========================================
-// ADVANCED HTML / JSON DECODER
+// HTML ENTITY DECODER
 // ==========================================
 
 function decodeEntities(s) {
   if (!s) return '';
 
-  return String(s)
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;/gi, "'")
-    .replace(/&#39;/gi, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) =>
-      String.fromCodePoint(
-        parseInt(h, 16)
+  let value =
+    String(s);
+
+  // Named entities
+  value =
+    value
+      .replace(
+        /&quot;/gi,
+        '"'
       )
-    )
-    .replace(/&#(\d+);/g, (_, d) =>
-      String.fromCodePoint(
-        parseInt(d, 10)
+      .replace(
+        /&amp;/gi,
+        '&'
       )
-    )
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&colon;/gi, ':')
-    .replace(/\\u0022/gi, '"')
-    .replace(/\\u0027/gi, "'")
-    .replace(/\\u003a/gi, ':')
-    .replace(/\\u0026/gi, '&')
-    .replace(/\\u003d/gi, '=')
-    .replace(/\\u002f/gi, '/')
-    .replace(/\\\//g, '/');
-}
-
-function decodeJsonStringLayers(input) {
-  if (typeof input !== 'string') {
-    return [];
-  }
-
-  const results = [];
-  const seen = new Set();
-
-  function add(value) {
-    if (
-      typeof value !== 'string' ||
-      !value ||
-      seen.has(value)
-    ) {
-      return;
-    }
-
-    seen.add(value);
-    results.push(value);
-  }
-
-  add(input);
-
-  const decoded = decodeEntities(input);
-  add(decoded);
-
-  add(
-    decoded
-      .replace(/\\\\u0022/gi, '"')
-      .replace(/\\\\u0026/gi, '&')
-      .replace(/\\\\u002f/gi, '/')
-      .replace(/\\\\\//g, '/')
-  );
-
-  add(
-    decoded
-      .replace(/\\"/g, '"')
-      .replace(/\\'/g, "'")
-      .replace(/\\\\/g, '\\')
-  );
-
-  add(
-    decoded
-      .replace(/\\x22/gi, '"')
-      .replace(/\\x27/gi, "'")
-      .replace(/\\x3a/gi, ':')
-      .replace(/\\x2f/gi, '/')
-  );
-
-  // Mengurai string JSON yang berisi JSON lain.
-  for (const candidate of [...results]) {
-    try {
-      const parsed = JSON.parse(candidate);
-
-      if (typeof parsed === 'string') {
-        add(parsed);
-        add(decodeEntities(parsed));
-      }
-    } catch (e) {}
-  }
-
-  return results;
-}
-
-// ==========================================
-// JSON BALANCED SCANNER
-// Mendukung nested object dan array
-// ==========================================
-
-function extractBalancedJson(text, start) {
-  if (
-    typeof text !== 'string' ||
-    text[start] !== '{'
-  ) {
-    return null;
-  }
-
-  const stack = [];
-
-  let inString = false;
-  let escaped = false;
-
-  for (
-    let i = start;
-    i < text.length;
-    i++
-  ) {
-    const char = text[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-
-      if (char === '\\') {
-        escaped = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = false;
-      }
-
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (
-      char === '{' ||
-      char === '['
-    ) {
-      stack.push(char);
-      continue;
-    }
-
-    if (
-      char === '}' ||
-      char === ']'
-    ) {
-      const last = stack.pop();
-
-      if (
-        (char === '}' && last !== '{') ||
-        (char === ']' && last !== '[')
-      ) {
-        return null;
-      }
-
-      if (stack.length === 0) {
-        return text.slice(start, i + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-// ==========================================
-// MENEMUKAN JSON DARI SELURUH HTML
-// ==========================================
-
-function extractJsonCandidates(raw) {
-  if (!raw) return [];
-
-  const candidates = [];
-  const seen = new Set();
-
-  function add(value) {
-    if (
-      typeof value !== 'string' ||
-      !value ||
-      seen.has(value)
-    ) {
-      return;
-    }
-
-    seen.add(value);
-    candidates.push(value);
-  }
-
-  const variants =
-    decodeJsonStringLayers(String(raw));
-
-  for (const text of variants) {
-    // Temukan objek JSON berdasarkan struktur.
-    let inString = false;
-    let escaped = false;
-
-    for (
-      let i = 0;
-      i < text.length;
-      i++
-    ) {
-      const char = text[i];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-
-        if (char === '\\') {
-          escaped = true;
-          continue;
-        }
-
-        if (char === '"') {
-          inString = false;
-        }
-
-        continue;
-      }
-
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
-
-      if (char === '{') {
-        const object =
-          extractBalancedJson(text, i);
-
-        if (object) {
-          add(object);
-        }
-      }
-    }
-
-    // Regex fleksibel untuk kandidat objek yang
-    // mengandung metadata gambar.
-    const keyRegex =
-      /\\*["']?\s*(?:murl|mediaUrl|imageUrl|image_url|originalUrl|contentUrl)\s*\\*["']?\s*:/gi;
-
-    let match;
-
-    while (
-      (match = keyRegex.exec(text)) !== null
-    ) {
-      const keyPosition = match.index;
-
-      const start = text.lastIndexOf(
-        '{',
-        keyPosition
+      .replace(
+        /&apos;/gi,
+        "'"
+      )
+      .replace(
+        /&#39;/gi,
+        "'"
+      )
+      .replace(
+        /&#x27;/gi,
+        "'"
       );
 
-      if (start < 0) continue;
-
-      const object =
-        extractBalancedJson(text, start);
-
-      if (object) {
-        add(object);
-      }
-    }
-
-    // Format JSON array yang berisi object.
-    const arrayRegex = /\[/g;
-
-    while (
-      (match = arrayRegex.exec(text)) !== null
-    ) {
-      const start = match.index;
-      let depth = 0;
-      let string = false;
-      let escape = false;
-
-      for (
-        let i = start;
-        i < text.length;
-        i++
-      ) {
-        const c = text[i];
-
-        if (string) {
-          if (escape) {
-            escape = false;
-            continue;
-          }
-
-          if (c === '\\') {
-            escape = true;
-            continue;
-          }
-
-          if (c === '"') {
-            string = false;
-          }
-
-          continue;
-        }
-
-        if (c === '"') {
-          string = true;
-          continue;
-        }
-
-        if (c === '[') depth++;
-
-        if (c === ']') {
-          depth--;
-
-          if (depth === 0) {
-            const array =
-              text.slice(start, i + 1);
-
-            if (/murl|mediaUrl|imageUrl/i.test(array)) {
-              add(array);
-            }
-
-            break;
-          }
+  // Hex entities
+  value =
+    value.replace(
+      /&#x([0-9a-f]+);/gi,
+      (_, h) => {
+        try {
+          return String.fromCodePoint(
+            parseInt(h, 16)
+          );
+        } catch (e) {
+          return _;
         }
       }
-    }
-  }
-
-  return candidates;
-}
-
-// ==========================================
-// NORMALISASI METADATA GAMBAR
-// ==========================================
-
-function getObjectValue(obj, names) {
-  if (
-    !obj ||
-    typeof obj !== 'object'
-  ) {
-    return undefined;
-  }
-
-  const entries = Object.entries(obj);
-
-  for (const name of names) {
-    const found = entries.find(
-      ([key]) =>
-        key.toLowerCase() ===
-        name.toLowerCase()
     );
 
-    if (
-      found &&
-      found[1] !== undefined &&
-      found[1] !== null &&
-      found[1] !== ''
-    ) {
-      return found[1];
-    }
-  }
-
-  return undefined;
-}
-
-function findNestedValue(
-  obj,
-  names,
-  depth = 0
-) {
-  if (
-    !obj ||
-    typeof obj !== 'object' ||
-    depth > 6
-  ) {
-    return undefined;
-  }
-
-  const direct =
-    getObjectValue(obj, names);
-
-  if (direct !== undefined) {
-    return direct;
-  }
-
-  for (const value of Object.values(obj)) {
-    if (
-      value &&
-      typeof value === 'object'
-    ) {
-      const result =
-        findNestedValue(
-          value,
-          names,
-          depth + 1
-        );
-
-      if (result !== undefined) {
-        return result;
+  // Decimal entities
+  value =
+    value.replace(
+      /&#(\d+);/g,
+      (_, d) => {
+        try {
+          return String.fromCodePoint(
+            parseInt(d, 10)
+          );
+        } catch (e) {
+          return _;
+        }
       }
-    }
-  }
+    );
 
-  return undefined;
-}
-
-function normalizeImageMetadata(obj) {
-  if (
-    !obj ||
-    typeof obj !== 'object'
-  ) {
-    return null;
-  }
-
-  const murl = findNestedValue(obj, [
-    'murl',
-    'mediaUrl',
-    'imageUrl',
-    'image_url',
-    'originalUrl',
-    'originalImage',
-    'contentUrl',
-    'fullImageUrl'
-  ]);
-
-  if (
-    !murl ||
-    typeof murl !== 'string'
-  ) {
-    return null;
-  }
-
-  const turl = findNestedValue(obj, [
-    'turl',
-    'thumbnailUrl',
-    'thumbnail',
-    'thumbUrl',
-    'thumbnail_url'
-  ]);
-
-  const purl = findNestedValue(obj, [
-    'purl',
-    'pageUrl',
-    'page_url',
-    'sourceUrl',
-    'webpageUrl'
-  ]);
-
-  const title = findNestedValue(obj, [
-    't',
-    'title',
-    'name',
-    'caption',
-    'description',
-    'desc'
-  ]);
-
-  const width = findNestedValue(obj, [
-    'ow',
-    'originalWidth',
-    'original_width',
-    'imageWidth',
-    'image_width',
-    'width',
-    'w'
-  ]);
-
-  const height = findNestedValue(obj, [
-    'oh',
-    'originalHeight',
-    'original_height',
-    'imageHeight',
-    'image_height',
-    'height',
-    'h'
-  ]);
-
-  const dimensions = findNestedValue(obj, [
-    'dim',
-    'dimensions',
-    'resolution',
-    'imageSize',
-    'imageDimensions'
-  ]);
-
-  return {
-    ...obj,
-    murl: String(murl),
-    turl: turl ? String(turl) : '',
-    purl: purl ? String(purl) : '',
-    t: title ? String(title) : '',
-    ow: width,
-    oh: height,
-    dim: dimensions
-  };
+  return value
+    .replace(
+      /\\u0022/gi,
+      '"'
+    )
+    .replace(
+      /\\u0026/gi,
+      '&'
+    )
+    .replace(
+      /\\u002f/gi,
+      '/'
+    )
+    .replace(
+      /\\\//g,
+      '/'
+    );
 }
 
 // ==========================================
-// PARSER JSON METADATA ADVANCED
+// JSON STRING DECODER
 // ==========================================
 
-function parseImageMetadata(raw) {
-  if (!raw) return null;
+function decodeJsonStringValue(value) {
+  if (
+    value === undefined ||
+    value === null
+  ) {
+    return '';
+  }
 
-  const variants =
-    decodeJsonStringLayers(String(raw));
+  let s =
+    String(value);
 
-  for (const candidate of variants) {
-    try {
+  // HTML entities terlebih dahulu
+  s =
+    decodeEntities(s);
+
+  // Kalau value merupakan JSON string,
+  // biarkan JSON.parse yang menangani escape.
+  try {
+    if (
+      s.length >= 2 &&
+      s[0] === '"' &&
+      s[s.length - 1] === '"'
+    ) {
       const parsed =
-        JSON.parse(candidate);
+        JSON.parse(s);
 
       if (
-        parsed &&
-        typeof parsed === 'object'
+        typeof parsed === 'string'
       ) {
-        const normalized =
-          normalizeImageMetadata(parsed);
-
-        if (normalized) {
-          return normalized;
-        }
+        return parsed;
       }
-    } catch (e) {}
-  }
-
-  // Coba mengambil object dari teks yang
-  // mengandung prefix/suffix non-JSON.
-  for (const candidate of variants) {
-    const objects =
-      extractJsonCandidates(candidate);
-
-    for (const object of objects) {
-      try {
-        const parsed =
-          JSON.parse(object);
-
-        const normalized =
-          normalizeImageMetadata(parsed);
-
-        if (normalized) {
-          return normalized;
-        }
-      } catch (e) {}
     }
-  }
+  } catch (e) {}
 
-  return null;
+  return s
+    .replace(
+      /\\"/g,
+      '"'
+    )
+    .replace(
+      /\\\\/g,
+      '\\'
+    );
 }
 
 // ==========================================
-// DIMENSIONS EXTRACTOR
+// EXTRACT DIMENSIONS
 // ==========================================
 
 function extractDimensions(
@@ -1291,8 +978,11 @@ function extractDimensions(
     mData?.image_height
   ];
 
-  for (const value of originalWidthFields) {
-    const n = safeParseInt(value);
+  for (
+    const value of originalWidthFields
+  ) {
+    const n =
+      safeParseInt(value);
 
     if (n > 0) {
       width = n;
@@ -1300,8 +990,11 @@ function extractDimensions(
     }
   }
 
-  for (const value of originalHeightFields) {
-    const n = safeParseInt(value);
+  for (
+    const value of originalHeightFields
+  ) {
+    const n =
+      safeParseInt(value);
 
     if (n > 0) {
       height = n;
@@ -1318,8 +1011,11 @@ function extractDimensions(
       mData?.metadata?.width
     ];
 
-    for (const value of fields) {
-      const n = safeParseInt(value);
+    for (
+      const value of fields
+    ) {
+      const n =
+        safeParseInt(value);
 
       if (n > 0) {
         width = n;
@@ -1337,8 +1033,11 @@ function extractDimensions(
       mData?.metadata?.height
     ];
 
-    for (const value of fields) {
-      const n = safeParseInt(value);
+    for (
+      const value of fields
+    ) {
+      const n =
+        safeParseInt(value);
 
       if (n > 0) {
         height = n;
@@ -1347,7 +1046,10 @@ function extractDimensions(
     }
   }
 
-  if (!width || !height) {
+  if (
+    !width ||
+    !height
+  ) {
     const sources = [
       mData?.dim,
       mData?.dimensions,
@@ -1357,74 +1059,119 @@ function extractDimensions(
       mData?.imageDimensions
     ];
 
-    for (const value of sources) {
+    for (
+      const value of sources
+    ) {
       if (!value) continue;
 
-      const match = String(value).match(
-        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const match =
+        String(value).match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (match) {
         if (!width) {
-          width = parseInt(match[1], 10);
+          width =
+            parseInt(
+              match[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(match[2], 10);
+          height =
+            parseInt(
+              match[2],
+              10
+            );
         }
 
-        if (width && height) break;
+        if (
+          width &&
+          height
+        ) {
+          break;
+        }
       }
     }
   }
 
+  // RAW ATTRIBUTE m
   if (
     (!width || !height) &&
     rawM
   ) {
-    const variants =
-      decodeJsonStringLayers(String(rawM));
+    const raw =
+      decodeEntities(
+        String(rawM)
+      );
 
-    for (const raw of variants) {
-      const widthMatch = raw.match(
+    const widthMatch =
+      raw.match(
         /["'](?:ow|originalWidth|imageWidth|width)["']\s*:\s*["']?(\d{2,6})/i
       );
 
-      const heightMatch = raw.match(
+    const heightMatch =
+      raw.match(
         /["'](?:oh|originalHeight|imageHeight|height)["']\s*:\s*["']?(\d{2,6})/i
       );
 
-      if (!width && widthMatch) {
-        width = parseInt(widthMatch[1], 10);
-      }
+    if (
+      !width &&
+      widthMatch
+    ) {
+      width =
+        parseInt(
+          widthMatch[1],
+          10
+        );
+    }
 
-      if (!height && heightMatch) {
-        height = parseInt(heightMatch[1], 10);
-      }
+    if (
+      !height &&
+      heightMatch
+    ) {
+      height =
+        parseInt(
+          heightMatch[1],
+          10
+        );
+    }
 
-      if (!width || !height) {
-        const dimMatch = raw.match(
+    if (
+      !width ||
+      !height
+    ) {
+      const dimMatch =
+        raw.match(
           /(?:dimensions?|resolution|size|imageSize|dim)["']?\s*[:=]\s*["']?(\d{2,6})\s*[x×]\s*(\d{2,6})/i
         );
 
-        if (dimMatch) {
-          if (!width) {
-            width = parseInt(dimMatch[1], 10);
-          }
+      if (dimMatch) {
+        if (!width) {
+          width =
+            parseInt(
+              dimMatch[1],
+              10
+            );
+        }
 
-          if (!height) {
-            height = parseInt(dimMatch[2], 10);
-          }
+        if (!height) {
+          height =
+            parseInt(
+              dimMatch[2],
+              10
+            );
         }
       }
-
-      if (width && height) break;
     }
   }
 
+  // HTML ATTRIBUTE
   if (
     $el &&
-    typeof $el.attr === 'function'
+    typeof $el.attr ===
+      'function'
   ) {
     const attrs = [
       $el.attr('data-dim'),
@@ -1434,93 +1181,147 @@ function extractDimensions(
       $el.attr('data-image-size')
     ];
 
-    const img = $el.find('img').first();
+    const img =
+      $el
+        .find('img')
+        .first();
 
     attrs.push(
       img.attr('data-dim'),
       img.attr('data-size'),
-      img.attr('data-resolution'),
-      img.attr('data-image-dim'),
-      img.attr('data-image-size')
+      img.attr(
+        'data-resolution'
+      ),
+      img.attr(
+        'data-image-dim'
+      ),
+      img.attr(
+        'data-image-size'
+      )
     );
 
-    for (const value of attrs) {
+    for (
+      const value of attrs
+    ) {
       if (!value) continue;
 
-      const match = String(value).match(
-        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const match =
+        String(value).match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (match) {
         if (!width) {
-          width = parseInt(match[1], 10);
+          width =
+            parseInt(
+              match[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(match[2], 10);
+          height =
+            parseInt(
+              match[2],
+              10
+            );
         }
 
-        if (width && height) break;
+        if (
+          width &&
+          height
+        ) {
+          break;
+        }
       }
     }
   }
 
+  // CAPTION
   if (
     (!width || !height) &&
     $el &&
-    typeof $el.closest === 'function'
+    typeof $el.closest ===
+      'function'
   ) {
     try {
-      const container = $el.closest('li');
+      const container =
+        $el.closest('li');
 
-      const captionText = container.find(
-        '.img_info .nowrap, .img_info, .imgpt .nowrap'
-      )
-        .first()
-        .text() || '';
+      const captionText =
+        container
+          .find(
+            '.img_info .nowrap, .img_info, .imgpt .nowrap'
+          )
+          .first()
+          .text() ||
+        '';
 
-      const match = captionText.match(
-        /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
-      );
+      const match =
+        captionText.match(
+          /(\d{2,6})\s*[x×]\s*(\d{2,6})/i
+        );
 
       if (match) {
         if (!width) {
-          width = parseInt(match[1], 10);
+          width =
+            parseInt(
+              match[1],
+              10
+            );
         }
 
         if (!height) {
-          height = parseInt(match[2], 10);
+          height =
+            parseInt(
+              match[2],
+              10
+            );
         }
       }
     } catch (e) {}
   }
 
+  // THUMBNAIL SIZE
   if (
     (!width || !height) &&
     $el &&
-    typeof $el.find === 'function'
+    typeof $el.find ===
+      'function'
   ) {
     try {
-      const thumb = $el.find('img').first();
+      const thumb =
+        $el
+          .find('img')
+          .first();
 
-      const tw = safeParseInt(
-        thumb.attr('width')
-      );
+      const tw =
+        safeParseInt(
+          thumb.attr('width')
+        );
 
-      const th = safeParseInt(
-        thumb.attr('height')
-      );
+      const th =
+        safeParseInt(
+          thumb.attr('height')
+        );
 
-      if (tw > 0 && th > 0) {
-        width = width || tw;
-        height = height || th;
+      if (
+        tw > 0 &&
+        th > 0
+      ) {
+        width =
+          width || tw;
+        height =
+          height || th;
       }
     } catch (e) {}
   }
 
   return {
-    width: width || null,
-    height: height || null
+    width:
+      width || null,
+    height:
+      height || null
   };
 }
 
@@ -1529,34 +1330,53 @@ function extractDimensions(
 // ==========================================
 
 function getImageProxy() {
-  const raw = process.env.IMAGE_PROXY_URL;
+  const raw =
+    process.env.IMAGE_PROXY_URL;
 
   if (!raw) return null;
 
   try {
-    const u = new URL(raw);
+    const u =
+      new URL(raw);
 
     if (
-      !['http:', 'https:'].includes(u.protocol)
+      ![
+        'http:',
+        'https:'
+      ].includes(
+        u.protocol
+      )
     ) {
       return null;
     }
 
     return {
-      protocol: u.protocol.replace(':', ''),
-      host: u.hostname,
+      protocol:
+        u.protocol.replace(
+          ':',
+          ''
+        ),
+      host:
+        u.hostname,
       port:
         Number(u.port) ||
         (
-          u.protocol === 'https:'
+          u.protocol ===
+          'https:'
             ? 443
             : 80
         ),
       ...(u.username
         ? {
             auth: {
-              username: decodeURIComponent(u.username),
-              password: decodeURIComponent(u.password)
+              username:
+                decodeURIComponent(
+                  u.username
+                ),
+              password:
+                decodeURIComponent(
+                  u.password
+                )
             }
           }
         : {})
@@ -1571,6 +1391,358 @@ function getImageProxy() {
 }
 
 // ==========================================
+// PARSE IMAGE METADATA
+// ==========================================
+
+function parseImageMetadata(raw) {
+  if (!raw) return null;
+
+  const candidates = [
+    String(raw),
+    decodeEntities(
+      String(raw)
+    ),
+    String(raw)
+      .replace(
+        /\\"/g,
+        '"'
+      )
+      .replace(
+        /\\'/g,
+        "'"
+      ),
+    decodeJsonStringValue(
+      raw
+    )
+  ];
+
+  for (
+    const candidate
+    of candidates
+  ) {
+    if (!candidate) {
+      continue;
+    }
+
+    try {
+      const parsed =
+        JSON.parse(candidate);
+
+      if (
+        parsed &&
+        typeof parsed ===
+          'object' &&
+        (
+          parsed.murl ||
+          parsed.purl ||
+          parsed.turl
+        )
+      ) {
+        return parsed;
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+// ==========================================
+// JSON OBJECT EXTRACTOR
+//
+// Tidak lagi memakai regex:
+//   /{[^{}]*"murl".../
+//
+// Karena regex tersebut gagal ketika
+// object memiliki nested object/array.
+//
+// Fungsi ini mencari object JSON dari posisi
+// tertentu sambil menghitung brace depth dan
+// mengabaikan { } yang berada di dalam string.
+// ==========================================
+
+function extractBalancedJsonObject(
+  text,
+  startIndex
+) {
+  if (
+    !text ||
+    startIndex < 0 ||
+    startIndex >= text.length
+  ) {
+    return null;
+  }
+
+  let start =
+    startIndex;
+
+  // Cari { terdekat.
+  if (
+    text[start] !== '{'
+  ) {
+    start =
+      text.indexOf(
+        '{',
+        start
+      );
+  }
+
+  if (start < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (
+    let i = start;
+    i < text.length;
+    i++
+  ) {
+    const ch =
+      text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (
+        ch === '\\'
+      ) {
+        escaped = true;
+        continue;
+      }
+
+      if (
+        ch === '"'
+      ) {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (
+      ch === '"'
+    ) {
+      inString = true;
+      continue;
+    }
+
+    if (
+      ch === '{'
+    ) {
+      depth++;
+      continue;
+    }
+
+    if (
+      ch === '}'
+    ) {
+      depth--;
+
+      if (depth === 0) {
+        return text.slice(
+          start,
+          i + 1
+        );
+      }
+    }
+  }
+
+  return null;
+}
+
+// ==========================================
+// CARI SEMUA JSON OBJECT YANG MENGANDUNG MURL
+// ==========================================
+
+function extractMurlObjects(
+  rawHtml,
+  limit = 50
+) {
+  if (
+    !rawHtml ||
+    limit <= 0
+  ) {
+    return [];
+  }
+
+  const decoded =
+    decodeEntities(
+      rawHtml
+    );
+
+  const results = [];
+  const seenRanges =
+    new Set();
+
+  // Variasi:
+  // "murl"
+  // 'murl'
+  // &quot;murl&quot; sudah didecode
+  const markerRegex =
+    /["']murl["']\s*:/gi;
+
+  let marker;
+
+  while (
+    (
+      marker =
+        markerRegex.exec(
+          decoded
+        )
+    ) &&
+    results.length <
+      limit
+  ) {
+    const markerIndex =
+      marker.index;
+
+    // Cari { sebelum "murl".
+    // Biasanya object tidak jauh dari marker.
+    const searchStart =
+      Math.max(
+        0,
+        markerIndex - 20000
+      );
+
+    let objectStart =
+      decoded.lastIndexOf(
+        '{',
+        markerIndex
+      );
+
+    if (
+      objectStart <
+      searchStart
+    ) {
+      objectStart =
+        decoded.indexOf(
+          '{',
+          markerIndex
+        );
+    }
+
+    if (
+      objectStart < 0
+    ) {
+      continue;
+    }
+
+    const objectText =
+      extractBalancedJsonObject(
+        decoded,
+        objectStart
+      );
+
+    if (!objectText) {
+      continue;
+    }
+
+    const rangeKey =
+      `${objectStart}:${objectText.length}`;
+
+    if (
+      seenRanges.has(
+        rangeKey
+      )
+    ) {
+      continue;
+    }
+
+    seenRanges.add(
+      rangeKey
+    );
+
+    const parsed =
+      parseImageMetadata(
+        objectText
+      );
+
+    if (
+      parsed &&
+      parsed.murl
+    ) {
+      results.push({
+        data: parsed,
+        raw: objectText
+      });
+    }
+  }
+
+  return results;
+}
+
+// ==========================================
+// PARSE ATTRIBUTE M / DATA-M
+// ==========================================
+
+function parseMetadataFromElement(
+  $,
+  $el
+) {
+  const attrs = [
+    'm',
+    'data-m',
+    'data-metadata',
+    'data-image',
+    'data-json',
+    'data-meta',
+    'data-item'
+  ];
+
+  for (
+    const attr
+    of attrs
+  ) {
+    const raw =
+      $el.attr(attr);
+
+    if (!raw) {
+      continue;
+    }
+
+    const parsed =
+      parseImageMetadata(
+        raw
+      );
+
+    if (
+      parsed &&
+      (
+        parsed.murl ||
+        parsed.purl ||
+        parsed.turl
+      )
+    ) {
+      return {
+        data: parsed,
+        raw
+      };
+    }
+
+    // Attribute mungkin berisi JSON
+    // nested/escaped yang perlu diekstrak.
+    const extracted =
+      extractMurlObjects(
+        raw,
+        1
+      );
+
+    if (
+      extracted.length
+    ) {
+      return extracted[0];
+    }
+  }
+
+  return null;
+}
+
+// ==========================================
 // BUILD IMAGE
 // ==========================================
 
@@ -1582,17 +1754,34 @@ function buildImage(
   query,
   rawM = ''
 ) {
-  d = normalizeImageMetadata(d);
+  if (
+    !d ||
+    typeof d !== 'object'
+  ) {
+    return null;
+  }
 
-  if (!d) return null;
-
-  const imageUrl = normalizeUrl(d.murl);
+  const imageUrl =
+    normalizeUrl(
+      d.murl ||
+      d.mediaUrl ||
+      d.imageUrl ||
+      d.contentUrl
+    );
 
   const thumbnailUrl =
-    normalizeUrl(d.turl);
+    normalizeUrl(
+      d.turl ||
+      d.thumbnailUrl ||
+      d.thumbnail
+    );
 
   const targetLink =
-    normalizeUrl(d.purl);
+    normalizeUrl(
+      d.purl ||
+      d.pageUrl ||
+      d.sourceUrl
+    );
 
   if (!imageUrl) {
     return null;
@@ -1600,130 +1789,87 @@ function buildImage(
 
   const title =
     d.t ||
+    d.title ||
+    d.name ||
     d.desc ||
     query;
 
   let domain = '';
 
   try {
-    domain = new URL(
-      targetLink || imageUrl
-    )
-      .hostname
-      .replace(/^www\./, '');
+    domain =
+      new URL(
+        targetLink ||
+        imageUrl
+      )
+        .hostname
+        .replace(
+          /^www\./,
+          ''
+        );
   } catch (e) {}
 
-  const dims = extractDimensions(
-    d,
-    $el || NO_EL,
-    rawM
-  );
+  const dims =
+    extractDimensions(
+      d,
+      $el || NO_EL,
+      rawM
+    );
 
   return {
-    title: String(title)
-      .replace(/<[^>]+>/g, '')
-      .trim(),
+    title:
+      String(title)
+        .replace(
+          /<[^>]+>/g,
+          ''
+        )
+        .trim(),
 
-    image: imageUrl,
-    imageUrl,
+    image:
+      imageUrl,
+
+    imageUrl:
+      imageUrl,
 
     thumbnail:
-      thumbnailUrl || imageUrl,
+      thumbnailUrl ||
+      imageUrl,
 
     thumbnailUrl:
-      thumbnailUrl || imageUrl,
+      thumbnailUrl ||
+      imageUrl,
 
-    width: dims.width,
-    height: dims.height,
+    width:
+      dims.width,
 
-    source: domain || '',
-    domain: domain || '',
+    height:
+      dims.height,
+
+    source:
+      domain || '',
+
+    domain:
+      domain || '',
 
     pageUrl:
-      targetLink || imageUrl,
+      targetLink ||
+      imageUrl,
 
     link:
-      targetLink || imageUrl,
+      targetLink ||
+      imageUrl,
 
     position:
-      offset + count + 1
+      offset +
+      count +
+      1
   };
 }
 
 // ==========================================
-// EXTRACT METADATA DARI HTML ATTRIBUTES
-// ==========================================
-
-function collectImageMetadataFromElement(
-  $,
-  el
-) {
-  const $el = $(el);
-
-  const attributes = [
-    'm',
-    'data-m',
-    'data-bm',
-    'data-json',
-    'data-metadata',
-    'data-image',
-    'data-image-data',
-    'data-item',
-    'data-info'
-  ];
-
-  const values = [];
-
-  for (const attr of attributes) {
-    const value = $el.attr(attr);
-
-    if (value) {
-      values.push(value);
-    }
-  }
-
-  const img = $el.find('img').first();
-
-  if (img.length) {
-    for (const attr of attributes) {
-      const value = img.attr(attr);
-
-      if (value) {
-        values.push(value);
-      }
-    }
-
-    const imageAttrs = [
-      'src',
-      'data-src',
-      'data-original',
-      'data-full',
-      'data-image',
-      'data-image-url',
-      'data-original-src'
-    ];
-
-    for (const attr of imageAttrs) {
-      const value = img.attr(attr);
-
-      if (
-        value &&
-        /^https?:\/\//i.test(value)
-      ) {
-        values.push(
-          JSON.stringify({
-            murl: value
-          })
-        );
-      }
-    }
-  }
-
-  return values;
-}
-
-// ==========================================
-// ADVANCED HTML IMAGE PARSER
+// PARSER #1
+// BING CLASSIC:
+// <a class="iusc" m="{...}">
 // ==========================================
 
 function parseBingImageCards(
@@ -1734,68 +1880,99 @@ function parseBingImageCards(
   query
 ) {
   const images = [];
-  const seen = new Set();
+  const seen =
+    new Set();
 
+  // Jangan hanya bergantung pada a.iusc.
+  // Ambil semua element yang punya kemungkinan
+  // metadata Bing.
   const selectors = [
     'a.iusc',
     '[m]',
     '[data-m]',
-    '[data-bm]',
-    '[data-json]',
     '[data-metadata]',
-    '[data-image-data]',
+    '[data-image]',
+    '[data-json]',
+    '[data-meta]',
     '[data-item]'
-  ].join(',');
+  ];
 
-  $(selectors).each((_, el) => {
-    if (images.length >= limit) {
-      return false;
-    }
+  const selector =
+    selectors.join(',');
 
-    const $el = $(el);
+  $(selector).each(
+    (_, el) => {
+      if (
+        images.length >=
+        limit
+      ) {
+        return false;
+      }
 
-    const rawValues =
-      collectImageMetadataFromElement($, el);
+      const $el =
+        $(el);
 
-    for (const raw of rawValues) {
-      const d = parseImageMetadata(raw);
+      const parsed =
+        parseMetadataFromElement(
+          $,
+          $el
+        );
 
-      if (!d || !d.murl) continue;
+      if (
+        !parsed ||
+        !parsed.data
+      ) {
+        return;
+      }
 
-      const imageUrl = normalizeUrl(d.murl);
+      const d =
+        parsed.data;
+
+      const imageUrl =
+        normalizeUrl(
+          d.murl ||
+          d.mediaUrl ||
+          d.imageUrl ||
+          d.contentUrl
+        );
 
       if (
         !imageUrl ||
-        seen.has(imageUrl)
+        seen.has(
+          imageUrl
+        )
       ) {
-        continue;
+        return;
       }
 
-      const built = buildImage(
-        d,
-        $el,
-        offset,
-        images.length,
-        query,
-        raw
+      seen.add(
+        imageUrl
       );
 
-      if (!built) continue;
+      const built =
+        buildImage(
+          d,
+          $el,
+          offset,
+          images.length,
+          query,
+          parsed.raw
+        );
 
-      seen.add(imageUrl);
-      images.push(built);
-
-      if (images.length >= limit) {
-        return false;
+      if (built) {
+        images.push(
+          built
+        );
       }
     }
-  });
+  );
 
   return images;
 }
 
 // ==========================================
-// RAW JSON FALLBACK
+// PARSER #2
+// JSON OBJECT LANGSUNG DARI RAW HTML
 // ==========================================
 
 function parseMurlFallback(
@@ -1804,106 +1981,72 @@ function parseMurlFallback(
   offset,
   query
 ) {
-  if (!html) return [];
+  if (!html) {
+    return [];
+  }
 
-  const candidates =
-    extractJsonCandidates(html);
+  const objects =
+    extractMurlObjects(
+      html,
+      Math.max(
+        limit * 3,
+        60
+      )
+    );
 
   const images = [];
-  const seen = new Set();
+  const seen =
+    new Set();
 
-  function addMetadata(d, raw) {
+  for (
+    const item
+    of objects
+  ) {
     if (
-      !d ||
-      images.length >= limit
+      images.length >=
+      limit
     ) {
-      return;
+      break;
     }
 
-    const normalized =
-      normalizeImageMetadata(d);
+    const d =
+      item.data;
 
-    if (!normalized) return;
+    if (
+      !d ||
+      !d.murl
+    ) {
+      continue;
+    }
 
     const url =
-      normalizeUrl(normalized.murl);
+      normalizeUrl(
+        d.murl
+      );
 
     if (
       !url ||
       seen.has(url)
     ) {
-      return;
+      continue;
     }
 
-    const built = buildImage(
-      normalized,
-      null,
-      offset,
-      images.length,
-      query,
-      raw
-    );
-
-    if (!built) return;
-
     seen.add(url);
-    images.push(built);
-  }
 
-  for (const candidate of candidates) {
-    if (images.length >= limit) break;
+    const built =
+      buildImage(
+        d,
+        null,
+        offset,
+        images.length,
+        query,
+        item.raw
+      );
 
-    try {
-      const parsed = JSON.parse(candidate);
-
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          if (images.length >= limit) break;
-
-          addMetadata(item, candidate);
-        }
-      } else {
-        addMetadata(parsed, candidate);
-      }
-    } catch (e) {}
-  }
-
-  // Regex tambahan untuk metadata yang
-  // tidak memiliki pembungkus JSON standar.
-  if (images.length < limit) {
-    const variants =
-      decodeJsonStringLayers(String(html));
-
-    for (const text of variants) {
-      if (images.length >= limit) break;
-
-      const keyRegex =
-        /\\*["']?\s*(?:murl|mediaUrl|imageUrl|image_url|originalUrl|contentUrl)\s*\\*["']?\s*:/gi;
-
-      let match;
-
-      while (
-        (match = keyRegex.exec(text)) !== null &&
-        images.length < limit
-      ) {
-        const start = text.lastIndexOf(
-          '{',
-          match.index
-        );
-
-        if (start < 0) continue;
-
-        const object =
-          extractBalancedJson(text, start);
-
-        if (!object) continue;
-
-        try {
-          const parsed = JSON.parse(object);
-
-          addMetadata(parsed, object);
-        } catch (e) {}
-      }
+    if (built) {
+      images.push(
+        built
+      );
     }
   }
 
@@ -1911,59 +2054,365 @@ function parseMurlFallback(
 }
 
 // ==========================================
-// SCRIPT DATA EXTRACTOR
+// PARSER #3
+// CARI DATA DARI SCRIPT / JSON-LIKE HTML
 // ==========================================
 
-function parseImagesFromScripts(
-  $,
+function parseBingScriptMetadata(
+  html,
   limit,
   offset,
   query
 ) {
+  if (!html) {
+    return [];
+  }
+
+  const $ =
+    cheerio.load(
+      html
+    );
+
   const images = [];
-  const seen = new Set();
+  const seen =
+    new Set();
 
-  $('script').each((_, el) => {
-    if (images.length >= limit) {
-      return false;
+  $('script').each(
+    (_, script) => {
+      if (
+        images.length >=
+        limit
+      ) {
+        return false;
+      }
+
+      const content =
+        $(script).html() ||
+        '';
+
+      if (
+        !/murl/i.test(
+          content
+        )
+      ) {
+        return;
+      }
+
+      const objects =
+        extractMurlObjects(
+          content,
+          Math.max(
+            limit * 2,
+            40
+          )
+        );
+
+      for (
+        const item
+        of objects
+      ) {
+        if (
+          images.length >=
+          limit
+        ) {
+          break;
+        }
+
+        const d =
+          item.data;
+
+        if (
+          !d ||
+          !d.murl
+        ) {
+          continue;
+        }
+
+        const url =
+          normalizeUrl(
+            d.murl
+          );
+
+        if (
+          !url ||
+          seen.has(url)
+        ) {
+          continue;
+        }
+
+        seen.add(url);
+
+        const built =
+          buildImage(
+            d,
+            null,
+            offset,
+            images.length,
+            query,
+            item.raw
+          );
+
+        if (built) {
+          images.push(
+            built
+          );
+        }
+      }
     }
-
-    const content =
-      $(el).html() || '';
-
-    if (
-      !/murl|mediaUrl|imageUrl|originalUrl|contentUrl/i.test(content)
-    ) {
-      return;
-    }
-
-    const parsed =
-      parseMurlFallback(
-        content,
-        limit - images.length,
-        offset + images.length,
-        query
-      );
-
-    for (const item of parsed) {
-      if (images.length >= limit) break;
-
-      if (seen.has(item.imageUrl)) continue;
-
-      seen.add(item.imageUrl);
-
-      item.position =
-        offset + images.length + 1;
-
-      images.push(item);
-    }
-  });
+  );
 
   return images;
 }
 
 // ==========================================
-// BING IMAGE ATTEMPTS
+// PARSER #4
+// CARI URL IMAGE DARI ATTRIBUTE / JSON
+// YANG TIDAK BERBENTUK OBJECT STANDAR
+// ==========================================
+
+function parseLooseImageMetadata(
+  html,
+  limit,
+  offset,
+  query
+) {
+  if (!html) {
+    return [];
+  }
+
+  const $ =
+    cheerio.load(
+      html
+    );
+
+  const images = [];
+  const seen =
+    new Set();
+
+  $('a, img, div, li').each(
+    (_, el) => {
+      if (
+        images.length >=
+        limit
+      ) {
+        return false;
+      }
+
+      const $el =
+        $(el);
+
+      const attrs =
+        el.attribs || {};
+
+      for (
+        const [key, value]
+        of Object.entries(
+          attrs
+        )
+      ) {
+        if (
+          typeof value !==
+          'string'
+        ) {
+          continue;
+        }
+
+        if (
+          !/murl|image|metadata|json|data/i.test(
+            key
+          )
+        ) {
+          continue;
+        }
+
+        const decoded =
+          decodeEntities(
+            value
+          );
+
+        const extracted =
+          extractMurlObjects(
+            decoded,
+            5
+          );
+
+        for (
+          const item
+          of extracted
+        ) {
+          if (
+            images.length >=
+            limit
+          ) {
+            break;
+          }
+
+          const d =
+            item.data;
+
+          if (
+            !d ||
+            !d.murl
+          ) {
+            continue;
+          }
+
+          const url =
+            normalizeUrl(
+              d.murl
+            );
+
+          if (
+            !url ||
+            seen.has(url)
+          ) {
+            continue;
+          }
+
+          seen.add(url);
+
+          const built =
+            buildImage(
+              d,
+              $el,
+              offset,
+              images.length,
+              query,
+              item.raw
+            );
+
+          if (built) {
+            images.push(
+              built
+            );
+          }
+        }
+      }
+    }
+  );
+
+  return images;
+}
+
+// ==========================================
+// MASTER IMAGE PARSER
+// ==========================================
+
+function parseAllBingImages(
+  html,
+  limit,
+  offset,
+  query
+) {
+  if (!html) {
+    return [];
+  }
+
+  const $ =
+    cheerio.load(
+      html
+    );
+
+  const all = [];
+  const seen =
+    new Set();
+
+  function append(
+    items
+  ) {
+    for (
+      const item
+      of items
+    ) {
+      if (
+        all.length >=
+        limit
+      ) {
+        break;
+      }
+
+      const url =
+        normalizeUrl(
+          item?.imageUrl ||
+          item?.image
+        );
+
+      if (
+        !url ||
+        seen.has(url)
+      ) {
+        continue;
+      }
+
+      seen.add(url);
+      all.push(item);
+    }
+  }
+
+  // 1. Struktur Bing klasik.
+  append(
+    parseBingImageCards(
+      $,
+      html,
+      limit,
+      offset,
+      query
+    )
+  );
+
+  if (
+    all.length >= limit
+  ) {
+    return all;
+  }
+
+  // 2. Raw HTML.
+  append(
+    parseMurlFallback(
+      html,
+      limit,
+      offset,
+      query
+    )
+  );
+
+  if (
+    all.length >= limit
+  ) {
+    return all;
+  }
+
+  // 3. Script JSON.
+  append(
+    parseBingScriptMetadata(
+      html,
+      limit,
+      offset,
+      query
+    )
+  );
+
+  if (
+    all.length >= limit
+  ) {
+    return all;
+  }
+
+  // 4. Loose metadata.
+  append(
+    parseLooseImageMetadata(
+      html,
+      limit,
+      offset,
+      query
+    )
+  );
+
+  return all;
+}
+
+// ==========================================
+// BUILD IMAGE REQUEST ATTEMPTS
 // ==========================================
 
 function buildImageAttempts(
@@ -1972,13 +2421,17 @@ function buildImageAttempts(
   offset,
   fetchCount
 ) {
-  const q = encodeURIComponent(query);
+  const q =
+    encodeURIComponent(
+      query
+    );
 
   const markets = [
     {
       mkt: config.mkt,
       hl: config.hl,
-      cc: config.gl.toUpperCase()
+      cc:
+        config.gl.toUpperCase()
     },
     {
       mkt: 'en-US',
@@ -1988,13 +2441,18 @@ function buildImageAttempts(
   ].filter(
     (m, i, arr) =>
       arr.findIndex(
-        x => x.mkt === m.mkt
+        x =>
+          x.mkt ===
+          m.mkt
       ) === i
   );
 
   const attempts = [];
 
-  for (const m of markets) {
+  for (
+    const m
+    of markets
+  ) {
     const common =
       `setmkt=${m.mkt}` +
       `&setlang=${m.hl}` +
@@ -2003,10 +2461,19 @@ function buildImageAttempts(
     const acceptLang =
       `${m.mkt},${m.hl};q=0.9`;
 
+    // --------------------------------------
+    // A. Async endpoint
+    // --------------------------------------
+
     attempts.push({
-      name: `async-${m.mkt}`,
-      market: m.mkt,
+      name:
+        `async-${m.mkt}`,
+
+      market:
+        m.mkt,
+
       acceptLang,
+
       url:
         `https://www.bing.com/images/async` +
         `?q=${q}` +
@@ -2021,10 +2488,19 @@ function buildImageAttempts(
         `&${common}`
     });
 
+    // --------------------------------------
+    // B. Full image page
+    // --------------------------------------
+
     attempts.push({
-      name: `page-${m.mkt}`,
-      market: m.mkt,
+      name:
+        `page-${m.mkt}`,
+
+      market:
+        m.mkt,
+
       acceptLang,
+
       url:
         `https://www.bing.com/images/search` +
         `?q=${q}` +
@@ -2046,37 +2522,51 @@ let bingCookie = {
   at: 0
 };
 
-async function getBingCookie(proxy) {
+async function getBingCookie(
+  proxy
+) {
   if (
     bingCookie.value &&
-    Date.now() - bingCookie.at <
+    Date.now() -
+      bingCookie.at <
       10 * 60 * 1000
   ) {
     return bingCookie.value;
   }
 
   try {
-    const r = await axios.get(
-      'https://www.bing.com/',
-      {
-        headers: {
-          'User-Agent': BING_UA,
-          'Accept-Language':
-            'id-ID,id;q=0.9,en;q=0.7'
-        },
-        timeout: 7000,
-        ...(proxy ? { proxy } : {})
-      }
-    );
+    const r =
+      await axios.get(
+        'https://www.bing.com/',
+        {
+          headers: {
+            'User-Agent':
+              BING_UA,
+            'Accept-Language':
+              'id-ID,id;q=0.9,en;q=0.7'
+          },
+          timeout: 7000,
+          ...(proxy
+            ? { proxy }
+            : {})
+        }
+      );
 
     const set =
-      r.headers['set-cookie'] || [];
+      r.headers[
+        'set-cookie'
+      ] || [];
 
     bingCookie = {
-      value: set
-        .map(c => c.split(';')[0])
-        .join('; '),
-      at: Date.now()
+      value:
+        set
+          .map(
+            c =>
+              c.split(';')[0]
+          )
+          .join('; '),
+      at:
+        Date.now()
     };
   } catch (e) {
     console.warn(
@@ -2097,29 +2587,49 @@ async function runImageAttempt(
   limit,
   offset
 ) {
-  const proxy = getImageProxy();
+  const proxy =
+    getImageProxy();
 
   const cookie =
-    await getBingCookie(proxy);
+    await getBingCookie(
+      proxy
+    );
 
-  const res = await axios.get(
-    attempt.url,
-    {
-      headers: {
-        'User-Agent': BING_UA,
-        'Accept':
-          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language':
-          attempt.acceptLang,
-        'Referer':
-          `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
-        ...(cookie ? { Cookie: cookie } : {})
-      },
-      timeout: 12000,
-      maxContentLength: 8 * 1024 * 1024,
-      ...(proxy ? { proxy } : {})
-    }
-  );
+  const res =
+    await axios.get(
+      attempt.url,
+      {
+        headers: {
+          'User-Agent':
+            BING_UA,
+
+          'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+
+          'Accept-Language':
+            attempt.acceptLang,
+
+          'Referer':
+            `https://www.bing.com/images/search?q=${encodeURIComponent(query)}`,
+
+          ...(cookie
+            ? {
+                Cookie:
+                  cookie
+              }
+            : {})
+        },
+
+        timeout: 12000,
+
+        maxContentLength:
+          8 * 1024 * 1024,
+
+        ...(proxy
+          ? { proxy }
+          : {})
+      }
+    );
 
   const html =
     typeof res.data === 'string'
@@ -2129,108 +2639,90 @@ async function runImageAttempt(
   const blocked =
     looksBlocked(html);
 
-  const $ = cheerio.load(html);
-
   let images = [];
 
   if (!blocked) {
-    // Tahap 1: Metadata dari HTML elements.
-    images = parseBingImageCards(
-      $,
-      html,
-      limit,
-      offset,
-      query
-    );
-
-    // Tahap 2: Metadata dari seluruh HTML mentah.
-    if (images.length < limit) {
-      const fallback =
-        parseMurlFallback(
-          html,
-          limit,
-          offset,
-          query
-        );
-
-      const seen = new Set(
-        images.map(i => i.imageUrl)
+    images =
+      parseAllBingImages(
+        html,
+        limit,
+        offset,
+        query
       );
-
-      for (const item of fallback) {
-        if (images.length >= limit) break;
-
-        if (seen.has(item.imageUrl)) continue;
-
-        seen.add(item.imageUrl);
-
-        item.position =
-          offset + images.length + 1;
-
-        images.push(item);
-      }
-    }
-
-    // Tahap 3: Data di dalam script.
-    if (images.length < limit) {
-      const scriptImages =
-        parseImagesFromScripts(
-          $,
-          limit - images.length,
-          offset + images.length,
-          query
-        );
-
-      const seen = new Set(
-        images.map(i => i.imageUrl)
-      );
-
-      for (const item of scriptImages) {
-        if (images.length >= limit) break;
-
-        if (seen.has(item.imageUrl)) continue;
-
-        seen.add(item.imageUrl);
-
-        item.position =
-          offset + images.length + 1;
-
-        images.push(item);
-      }
-    }
   }
 
   const score =
-    relevanceScore(images, query);
+    relevanceScore(
+      images,
+      query
+    );
+
+  const $ =
+    cheerio.load(
+      html
+    );
 
   const pageTitle =
     (
-      $('title').first().text() || ''
+      $('title')
+        .first()
+        .text() ||
+      ''
     )
       .trim()
-      .slice(0, 80);
+      .slice(
+        0,
+        120
+      );
 
-  if (images.length === 0) {
-    $('script, style').remove();
+  // ========================================
+  // DEBUG DATA
+  // ========================================
+
+  if (
+    images.length === 0
+  ) {
+    $('script, style')
+      .remove();
 
     const bodyText =
       $('body')
         .text()
-        .replace(/\s+/g, ' ')
+        .replace(
+          /\s+/g,
+          ' '
+        )
         .trim()
-        .slice(0, 300);
+        .slice(
+          0,
+          500
+        );
 
     const iuscCount =
       (
         html.match(
-          /class=["'][^"']*\biusc\b[^"']*["']/g
+          /class=["'][^"']*\biusc\b[^"']*["']/gi
         ) || []
       ).length;
 
     const murlCount =
       (
         html.match(
-          /murl|mediaUrl|imageUrl|originalUrl|contentUrl/gi
+          /["']murl["']\s*:/gi
+        ) || []
+      ).length;
+
+    const turlCount =
+      (
+        html.match(
+          /["']turl["']\s*:/gi
+        ) || []
+      ).length;
+
+    const purlCount =
+      (
+        html.match(
+          /["']purl["']\s*:/gi
         ) || []
       ).length;
 
@@ -2240,10 +2732,19 @@ async function runImageAttempt(
       `len=${html.length} ` +
       `title="${pageTitle}" ` +
       `iusc=${iuscCount} ` +
-      `metadataKeys=${murlCount} ` +
+      `murl=${murlCount} ` +
+      `turl=${turlCount} ` +
+      `purl=${purlCount} ` +
       `challenge=${blocked} ` +
       `proxy=${!!proxy} ` +
       `body="${bodyText}"`
+    );
+  } else {
+    console.log(
+      `[IMG-PARSER] ${attempt.name} ` +
+      `berhasil parse ${images.length} gambar ` +
+      `dari HTML ${html.length}B ` +
+      `title="${pageTitle}"`
     );
   }
 
@@ -2251,8 +2752,10 @@ async function runImageAttempt(
     images,
     score,
     blocked,
-    status: res.status,
-    htmlLength: html.length,
+    status:
+      res.status,
+    htmlLength:
+      html.length,
     pageTitle
   };
 }
@@ -2268,7 +2771,10 @@ async function fetchImagesBing(
   offset
 ) {
   const fetchCount =
-    Math.max(limit, 20);
+    Math.max(
+      limit,
+      20
+    );
 
   const attempts =
     buildImageAttempts(
@@ -2283,22 +2789,31 @@ async function fetchImagesBing(
 
   const errors = [];
 
-  for (const attempt of attempts) {
+  for (
+    const attempt
+    of attempts
+  ) {
     try {
-      const r = await runImageAttempt(
-        attempt,
-        query,
-        limit,
-        offset
-      );
+      const r =
+        await runImageAttempt(
+          attempt,
+          query,
+          limit,
+          offset
+        );
 
-      if (r.blocked) {
+      if (
+        r.blocked
+      ) {
         throw new Error(
           `BLOCKED_CAPTCHA (${attempt.name})`
         );
       }
 
-      if (r.images.length === 0) {
+      if (
+        r.images.length ===
+        0
+      ) {
         throw new Error(
           `EMPTY (${attempt.name}, HTML ${r.htmlLength}B, title "${r.pageTitle}")`
         );
@@ -2309,16 +2824,33 @@ async function fetchImagesBing(
         `${r.images.length} gambar, relevansi ${r.score.toFixed(2)}`
       );
 
-      if (r.score > bestScore) {
-        best = r.images;
-        bestScore = r.score;
+      if (
+        r.score >
+        bestScore
+      ) {
+        best =
+          r.images;
+
+        bestScore =
+          r.score;
       }
 
-      if (r.score >= 0.2) {
+      // Jangan terlalu ketat.
+      // Jika Bing memang mengembalikan image card
+      // yang valid, langsung pakai.
+      if (
+        r.images.length >=
+        Math.min(
+          limit,
+          5
+        )
+      ) {
         return r.images;
       }
     } catch (err) {
-      errors.push(err.message);
+      errors.push(
+        err.message
+      );
 
       console.warn(
         `[IMAGES] Strategi "${attempt.name}" gagal: ${err.message}`
@@ -2328,21 +2860,19 @@ async function fetchImagesBing(
 
   if (
     best &&
-    bestScore < 0.1
+    best.length > 0
   ) {
-    throw new Error(
-      `IRRELEVANT_RESULT: Bing mengembalikan gambar yang tidak cukup relevan dengan "${query}".`
-    );
+    return best;
   }
 
-  if (!best) {
-    throw new Error(
-      `BING_FAILED: ${errors.join(' | ')}`
-    );
-  }
-
-  return best;
+  throw new Error(
+    `BING_FAILED: ${errors.join(' | ')}`
+  );
 }
+
+// ==========================================
+// FETCH IMAGES WITH RETRY
+// ==========================================
 
 async function fetchImages(
   query,
@@ -2351,6 +2881,7 @@ async function fetchImages(
   offset
 ) {
   const tries = 2;
+
   let lastErr = null;
 
   for (
@@ -2359,12 +2890,13 @@ async function fetchImages(
     t++
   ) {
     try {
-      const out = await fetchImagesBing(
-        query,
-        config,
-        limit,
-        offset
-      );
+      const out =
+        await fetchImagesBing(
+          query,
+          config,
+          limit,
+          offset
+        );
 
       trackSource(
         'bing-images',
@@ -2384,14 +2916,20 @@ async function fetchImages(
         `[IMAGES] bing-images percobaan ${t}/${tries} gagal: ${err.message}`
       );
 
-      if (t < tries) {
+      if (
+        t < tries
+      ) {
         bingCookie = {
           value: '',
           at: 0
         };
 
         await new Promise(
-          r => setTimeout(r, 700)
+          r =>
+            setTimeout(
+              r,
+              700
+            )
         );
       }
     }
@@ -2400,7 +2938,8 @@ async function fetchImages(
   trackSource(
     'bing-images',
     false,
-    lastErr?.message || 'Unknown error'
+    lastErr?.message ||
+      'Unknown error'
   );
 
   throw new Error(
@@ -2413,9 +2952,14 @@ async function fetchImages(
 // Bing News primer + Google News RSS fallback
 // ==========================================
 
-function buildBingNewsCookies(config) {
-  const region = config.gl.toUpperCase();
-  const lang = config.hl;
+function buildBingNewsCookies(
+  config
+) {
+  const region =
+    config.gl.toUpperCase();
+
+  const lang =
+    config.hl;
 
   return (
     `_EDGE_CD=m=${region}&u=${lang}; ` +
@@ -2432,7 +2976,8 @@ async function fetchNewsViaBing(
   try {
     const newsItems = [];
 
-    const first = offset + 1;
+    const first =
+      offset + 1;
 
     const bingNewsUrl =
       `https://www.bing.com/news/infinitescrollajax` +
@@ -2440,128 +2985,217 @@ async function fetchNewsViaBing(
       `&InfiniteScroll=1` +
       `&first=${first}`;
 
-    const res = await axios.get(
-      bingNewsUrl,
-      {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept':
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language':
-            'id-ID,id;q=0.9,en;q=0.7',
-          'Referer':
-            'https://www.bing.com/news',
-          'Cookie':
-            buildBingNewsCookies(config)
-        },
-        timeout: 10000,
-        maxContentLength: 5 * 1024 * 1024
-      }
-    );
+    const res =
+      await axios.get(
+        bingNewsUrl,
+        {
+          headers: {
+            'User-Agent':
+              getRandomUserAgent(),
+
+            'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+
+            'Accept-Language':
+              'id-ID,id;q=0.9,en;q=0.7',
+
+            'Referer':
+              'https://www.bing.com/news',
+
+            'Cookie':
+              buildBingNewsCookies(
+                config
+              )
+          },
+
+          timeout: 10000,
+
+          maxContentLength:
+            5 * 1024 * 1024
+        }
+      );
 
     const html =
       typeof res.data === 'string'
         ? res.data
         : '';
 
-    if (looksBlocked(html)) {
+    if (
+      looksBlocked(html)
+    ) {
       throw new Error(
         'BLOCKED_CAPTCHA: Bing News meminta verifikasi atau mendeteksi trafik otomatis.'
       );
     }
 
-    const $ = cheerio.load(html);
+    const $ =
+      cheerio.load(
+        html
+      );
 
-    let cards = $('div[class*="newsitem"]');
+    let cards =
+      $(
+        'div[class*="newsitem"]'
+      );
 
-    if (cards.length === 0) {
-      cards = $('[url][class*="news"]');
+    if (
+      cards.length === 0
+    ) {
+      cards =
+        $(
+          '[url][class*="news"]'
+        );
     }
 
-    cards.each((_, el) => {
-      if (newsItems.length >= limit) {
-        return false;
+    cards.each(
+      (_, el) => {
+        if (
+          newsItems.length >=
+          limit
+        ) {
+          return false;
+        }
+
+        const $el =
+          $(el);
+
+        const link =
+          normalizeUrl(
+            $el.attr('url') ||
+            $el
+              .find(
+                'a.title'
+              )
+              .first()
+              .attr(
+                'href'
+              )
+          );
+
+        const title =
+          $el
+            .find(
+              '.caption a.title, a.title'
+            )
+            .first()
+            .text()
+            .trim();
+
+        if (
+          !title ||
+          !link
+        ) {
+          return;
+        }
+
+        const snippet =
+          $el
+            .find(
+              '.snippet'
+            )
+            .first()
+            .text()
+            .trim();
+
+        const sourceSpans =
+          $el.find(
+            '.source span'
+          );
+
+        const metadataText =
+          sourceSpans
+            .map(
+              (i, s) =>
+                $(s)
+                  .text()
+                  .trim()
+            )
+            .get()
+            .filter(Boolean)
+            .join(' · ');
+
+        const publisher =
+          sourceSpans
+            .first()
+            .text()
+            .trim();
+
+        const img =
+          $el
+            .find(
+              'a.imagelink img, img'
+            )
+            .first();
+
+        const thumbnail =
+          normalizeUrl(
+            img.attr('src') ||
+            img.attr(
+              'data-src'
+            ) ||
+            img.attr(
+              'data-original'
+            )
+          );
+
+        let domain = '';
+
+        try {
+          domain =
+            new URL(link)
+              .hostname
+              .replace(
+                /^www\./,
+                ''
+              );
+        } catch (e) {}
+
+        newsItems.push({
+          title,
+          link,
+          snippet:
+            snippet ||
+            'Tidak ada deskripsi.',
+          publisher:
+            publisher ||
+            domain ||
+            'Berita',
+          domain,
+          thumbnailUrl:
+            thumbnail,
+          publishedAt:
+            metadataText ||
+            null,
+          position:
+            offset +
+            newsItems.length +
+            1
+        });
       }
+    );
 
-      const $el = $(el);
-
-      const link = normalizeUrl(
-        $el.attr('url') ||
-        $el.find('a.title').first().attr('href')
-      );
-
-      const title = $el
-        .find('.caption a.title, a.title')
-        .first()
-        .text()
-        .trim();
-
-      if (!title || !link) return;
-
-      const snippet = $el
-        .find('.snippet')
-        .first()
-        .text()
-        .trim();
-
-      const sourceSpans = $el.find('.source span');
-
-      const metadataText = sourceSpans
-        .map((i, s) =>
-          $(s).text().trim()
-        )
-        .get()
-        .filter(Boolean)
-        .join(' · ');
-
-      const publisher = sourceSpans
-        .first()
-        .text()
-        .trim();
-
-      const img = $el
-        .find('a.imagelink img, img')
-        .first();
-
-      const thumbnail = normalizeUrl(
-        img.attr('src') ||
-        img.attr('data-src') ||
-        img.attr('data-original')
-      );
-
-      let domain = '';
-
-      try {
-        domain = new URL(link)
-          .hostname
-          .replace(/^www\./, '');
-      } catch (e) {}
-
-      newsItems.push({
-        title,
-        link,
-        snippet:
-          snippet || 'Tidak ada deskripsi.',
-        publisher:
-          publisher || domain || 'Berita',
-        domain,
-        thumbnailUrl: thumbnail,
-        publishedAt: metadataText || null,
-        position: offset + newsItems.length + 1
-      });
-    });
-
-    if (newsItems.length === 0) {
+    if (
+      newsItems.length ===
+      0
+    ) {
       throw new Error(
         'EMPTY_RESULT: Struktur berita Bing tidak ditemukan atau markup berubah.'
       );
     }
 
-    trackSource('bing-news', true);
+    trackSource(
+      'bing-news',
+      true
+    );
 
     return newsItems;
   } catch (err) {
-    trackSource('bing-news', false, err.message);
+    trackSource(
+      'bing-news',
+      false,
+      err.message
+    );
+
     throw err;
   }
 }
@@ -2582,103 +3216,188 @@ async function fetchNewsViaGoogleRss(
       `&gl=${config.gl.toUpperCase()}` +
       `&ceid=${config.gl.toUpperCase()}:${config.hl}`;
 
-    const response = await axios.get(
-      rssUrl,
-      {
-        headers: {
-          'User-Agent': getRandomUserAgent(),
-          'Accept':
-            'application/rss+xml, application/xml, text/xml, */*'
-        },
-        timeout: 12000,
-        responseType: 'text',
-        maxContentLength: 5 * 1024 * 1024
-      }
-    );
+    const response =
+      await axios.get(
+        rssUrl,
+        {
+          headers: {
+            'User-Agent':
+              getRandomUserAgent(),
 
-    const feed = await rssParser.parseString(
-      response.data
-    );
+            'Accept':
+              'application/rss+xml, application/xml, text/xml, */*'
+          },
 
-    const rawItems = feed.items || [];
+          timeout: 12000,
 
-    const pagedItems = rawItems.slice(
-      offset,
-      offset + limit
-    );
+          responseType:
+            'text',
 
-    if (pagedItems.length === 0) {
+          maxContentLength:
+            5 * 1024 * 1024
+        }
+      );
+
+    const feed =
+      await rssParser.parseString(
+        response.data
+      );
+
+    const rawItems =
+      feed.items || [];
+
+    const pagedItems =
+      rawItems.slice(
+        offset,
+        offset + limit
+      );
+
+    if (
+      pagedItems.length ===
+      0
+    ) {
       throw new Error(
         'EMPTY_RESULT: RSS Google News kosong.'
       );
     }
 
-    for (const item of pagedItems) {
-      if (!item.title || !item.link) continue;
-
-      let thumbnail = null;
-
-      if (item.mediaThumbnail?.$?.url) {
-        thumbnail = item.mediaThumbnail.$.url;
-      } else if (item.mediaContent?.$?.url) {
-        thumbnail = item.mediaContent.$.url;
-      } else {
-        thumbnail = extractImageFromHtml(
-          item.content ||
-          item.snippet ||
-          item.summary
-        );
+    for (
+      const item
+      of pagedItems
+    ) {
+      if (
+        !item.title ||
+        !item.link
+      ) {
+        continue;
       }
 
-      let sourceName = item.source || 'Berita';
+      let thumbnail =
+        null;
 
       if (
-        typeof sourceName === 'object' &&
+        item
+          .mediaThumbnail
+          ?.$?.url
+      ) {
+        thumbnail =
+          item
+            .mediaThumbnail
+            .$.
+            url;
+      } else if (
+        item
+          .mediaContent
+          ?.$?.url
+      ) {
+        thumbnail =
+          item
+            .mediaContent
+            .$.
+            url;
+      } else {
+        thumbnail =
+          extractImageFromHtml(
+            item.content ||
+            item.snippet ||
+            item.summary
+          );
+      }
+
+      let sourceName =
+        item.source ||
+        'Berita';
+
+      if (
+        typeof sourceName ===
+          'object' &&
         sourceName._
       ) {
-        sourceName = sourceName._;
+        sourceName =
+          sourceName._;
       }
 
       let domain = '';
 
       try {
-        domain = new URL(item.link)
-          .hostname
-          .replace(/^www\./, '');
+        domain =
+          new URL(
+            item.link
+          )
+            .hostname
+            .replace(
+              /^www\./,
+              ''
+            );
       } catch (e) {}
 
       const cleanSnippet =
         item.contentSnippet ||
         (
           item.content
-            ? cheerio.load(item.content).text()
+            ? cheerio
+                .load(
+                  item.content
+                )
+                .text()
             : ''
         );
 
       newsItems.push({
-        title: item.title.replace(/ - [^-]+$/, ''),
-        link: item.link,
-        snippet: cleanSnippet.trim(),
-        publisher: sourceName,
+        title:
+          item.title.replace(
+            / - [^-]+$/,
+            ''
+          ),
+
+        link:
+          item.link,
+
+        snippet:
+          cleanSnippet.trim(),
+
+        publisher:
+          sourceName,
+
         domain,
-        thumbnailUrl: thumbnail,
+
+        thumbnailUrl:
+          thumbnail,
+
         publishedAt:
-          item.pubDate || item.isoDate || null,
-        position: offset + newsItems.length + 1
+          item.pubDate ||
+          item.isoDate ||
+          null,
+
+        position:
+          offset +
+          newsItems.length +
+          1
       });
     }
 
-    if (newsItems.length === 0) {
+    if (
+      newsItems.length ===
+      0
+    ) {
       throw new Error(
         'EMPTY_RESULT: Semua item RSS kosong setelah filter.'
       );
     }
 
-    trackSource('google-news-rss', true);
+    trackSource(
+      'google-news-rss',
+      true
+    );
 
     return newsItems;
   } catch (err) {
-    trackSource('google-news-rss', false, err.message);
+    trackSource(
+      'google-news-rss',
+      false,
+      err.message
+    );
+
     throw err;
   }
 }
@@ -2713,8 +3432,10 @@ async function fetchNews(
         'FATAL',
         'Semua sumber berita (Bing + Google RSS) gagal total',
         {
-          bingError: bingErr.message,
-          rssError: rssErr.message,
+          bingError:
+            bingErr.message,
+          rssError:
+            rssErr.message,
           query
         }
       );
@@ -2731,12 +3452,17 @@ async function fetchNews(
 // ==========================================
 
 function getCache(key) {
-  const entry = cache.get(key);
+  const entry =
+    cache.get(key);
 
-  if (!entry) return null;
+  if (!entry) {
+    return null;
+  }
 
   if (
-    Date.now() - entry.timestamp >= CACHE_TTL
+    Date.now() -
+      entry.timestamp >=
+    CACHE_TTL
   ) {
     cache.delete(key);
     return null;
@@ -2745,19 +3471,32 @@ function getCache(key) {
   return entry;
 }
 
-function setCache(key, data) {
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
+function setCache(
+  key,
+  data
+) {
+  if (
+    cache.size >=
+    CACHE_MAX
+  ) {
+    const oldest =
+      cache.keys().next().value;
 
     if (oldest) {
-      cache.delete(oldest);
+      cache.delete(
+        oldest
+      );
     }
   }
 
-  cache.set(key, {
-    timestamp: Date.now(),
-    data
-  });
+  cache.set(
+    key,
+    {
+      timestamp:
+        Date.now(),
+      data
+    }
+  );
 }
 
 // ==========================================
@@ -2768,42 +3507,67 @@ function setCache(key, data) {
 app.get(
   '/api/search',
   async (req, res) => {
-    const startTime = Date.now();
+    const startTime =
+      Date.now();
 
     const query =
-      typeof req.query.q === 'string'
+      typeof req.query.q ===
+      'string'
         ? req.query.q.trim()
         : '';
 
     const searchType = (
-      typeof req.query.type === 'string'
+      typeof req.query.type ===
+      'string'
         ? req.query.type
         : 'search'
     ).toLowerCase();
 
     if (!query) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Parameter "q" wajib diisi.'
-      });
-    }
+      return res
+        .status(400)
+        .json({
+          status:
+            'error',
 
-    if (query.length > 500) {
-      return res.status(400).json({
-        status: 'error',
-        message:
-          'Query terlalu panjang. Maksimal 500 karakter.'
-      });
+          message:
+            'Parameter "q" wajib diisi.'
+        });
     }
 
     if (
-      !['search', 'images', 'news'].includes(searchType)
+      query.length >
+      500
     ) {
-      return res.status(400).json({
-        status: 'error',
-        message:
-          'Parameter type hanya mendukung search, images, atau news.'
-      });
+      return res
+        .status(400)
+        .json({
+          status:
+            'error',
+
+          message:
+            'Query terlalu panjang. Maksimal 500 karakter.'
+        });
+    }
+
+    if (
+      ![
+        'search',
+        'images',
+        'news'
+      ].includes(
+        searchType
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          status:
+            'error',
+
+          message:
+            'Parameter type hanya mendukung search, images, atau news.'
+        });
     }
 
     const defaultLimit = {
@@ -2812,143 +3576,222 @@ app.get(
       news: 15
     };
 
-    const limit = defaultLimit[searchType];
+    const limit =
+      defaultLimit[
+        searchType
+      ];
 
     let offset = 0;
 
-    if (req.query.start !== undefined) {
-      offset = Math.max(
-        0,
-        parseInt(req.query.start, 10) || 0
-      );
-    } else if (req.query.page !== undefined) {
-      const page = Math.max(
-        1,
-        parseInt(req.query.page, 10) || 1
-      );
+    if (
+      req.query.start !==
+      undefined
+    ) {
+      offset =
+        Math.max(
+          0,
+          parseInt(
+            req.query.start,
+            10
+          ) || 0
+        );
+    } else if (
+      req.query.page !==
+      undefined
+    ) {
+      const page =
+        Math.max(
+          1,
+          parseInt(
+            req.query.page,
+            10
+          ) || 1
+        );
 
-      offset = (page - 1) * limit;
+      offset =
+        (page - 1) *
+        limit;
     }
 
-    offset = Math.min(offset, 10000);
+    offset =
+      Math.min(
+        offset,
+        10000
+      );
 
-    const config = resolveLanguageConfig();
+    const config =
+      resolveLanguageConfig();
 
     const cacheKey =
       `${searchType}_${query.toLowerCase()}_` +
       `${config.hl}_${config.gl}_${limit}_start${offset}`;
 
-    const staleEntry = getCache(cacheKey);
+    const staleEntry =
+      getCache(
+        cacheKey
+      );
 
     if (staleEntry) {
-      return res.json(staleEntry.data);
+      return res.json(
+        staleEntry.data
+      );
     }
 
     try {
       let results = [];
 
-      if (searchType === 'images') {
-        results = await fetchImages(
-          query,
-          config,
-          limit,
-          offset
-        );
-      } else if (searchType === 'news') {
-        results = await fetchNews(
-          query,
-          config,
-          limit,
-          offset
-        );
+      if (
+        searchType ===
+        'images'
+      ) {
+        results =
+          await fetchImages(
+            query,
+            config,
+            limit,
+            offset
+          );
+      } else if (
+        searchType ===
+        'news'
+      ) {
+        results =
+          await fetchNews(
+            query,
+            config,
+            limit,
+            offset
+          );
       } else {
-        results = await fetchWebResults(
-          query,
-          config,
-          limit,
-          offset
-        );
+        results =
+          await fetchWebResults(
+            query,
+            config,
+            limit,
+            offset
+          );
       }
 
       if (
-        searchType !== 'images' &&
-        results.length > 0
+        searchType !==
+          'images' &&
+        results.length >
+          0
       ) {
-        results = await finalizeLinks(results);
+        results =
+          await finalizeLinks(
+            results
+          );
       }
 
-      if (results.length === 0) {
-        return res.status(502).json({
-          status: 'error',
-          message:
-            'Hasil pencarian kosong. Server mungkin diblokir penyedia pencarian atau struktur HTML berubah.',
-          searchParameters: {
-            q: query,
-            type: searchType,
-            start: offset
-          }
-        });
+      if (
+        results.length ===
+        0
+      ) {
+        return res
+          .status(502)
+          .json({
+            status:
+              'error',
+
+            message:
+              'Hasil pencarian kosong. Server mungkin diblokir penyedia pencarian atau struktur HTML berubah.',
+
+            searchParameters: {
+              q: query,
+              type:
+                searchType,
+              start:
+                offset
+            }
+          });
       }
 
       const searchTime = (
-        (Date.now() - startTime) / 1000
+        (
+          Date.now() -
+          startTime
+        ) / 1000
       ).toFixed(2);
 
       const responsePayload = {
-        status: 'success',
+        status:
+          'success',
 
         searchParameters: {
           q: query,
-          type: searchType,
-          hl: config.hl,
-          gl: config.gl,
-          num: limit,
-          start: offset,
-          page: Math.floor(offset / limit) + 1
+          type:
+            searchType,
+          hl:
+            config.hl,
+          gl:
+            config.gl,
+          num:
+            limit,
+          start:
+            offset,
+          page:
+            Math.floor(
+              offset /
+                limit
+            ) + 1
         },
 
         searchInformation: {
-          formattedSearchTime: searchTime,
-          totalResults: results.length
-        },
+          formattedSearchTime:
+            searchTime,
 
-        provider: results.provider || undefined,
+          totalResults:
+            results.length
+        },
 
         results,
 
         images:
-          searchType === 'images'
+          searchType ===
+          'images'
             ? results
             : undefined,
 
         items:
-          searchType === 'search'
+          searchType ===
+          'search'
             ? results
             : undefined,
 
         news:
-          searchType === 'news'
+          searchType ===
+          'news'
             ? results
             : undefined
       };
 
-      setCache(cacheKey, responsePayload);
+      setCache(
+        cacheKey,
+        responsePayload
+      );
 
-      return res.json(responsePayload);
+      return res.json(
+        responsePayload
+      );
     } catch (error) {
       console.error(
         `[API ERROR] Type=${searchType}:`,
         error.message
       );
 
-      if (staleEntry) {
+      if (
+        staleEntry
+      ) {
         return res.json({
           ...staleEntry.data,
-          stale: true
+          stale:
+            true
         });
       }
 
-      let statusCode = 500;
+      let statusCode =
+        500;
 
       let customMessage =
         'Terjadi kesalahan pada server backend.';
@@ -2961,7 +3804,8 @@ app.get(
           'IRRELEVANT_RESULT'
         )
       ) {
-        statusCode = 502;
+        statusCode =
+          502;
 
         customMessage =
           'Bing Images gagal mengembalikan hasil gambar yang valid saat ini. Coba lagi beberapa saat.';
@@ -2970,37 +3814,60 @@ app.get(
           'ALL_NEWS_SOURCES_FAILED'
         )
       ) {
-        statusCode = 502;
+        statusCode =
+          502;
 
         customMessage =
           'Semua sumber berita (primer dan fallback) gagal.';
       } else if (
-        error.code === 'ECONNABORTED' ||
-        error.message.toLowerCase().includes('timeout')
+        error.code ===
+          'ECONNABORTED' ||
+        error.message
+          .toLowerCase()
+          .includes(
+            'timeout'
+          )
       ) {
-        statusCode = 504;
+        statusCode =
+          504;
 
         customMessage =
           'Koneksi timeout ke mesin pencari Bing/Google. Jaringan lambat atau terputus.';
       } else if (
-        error.message.includes('BLOCKED_CAPTCHA')
+        error.message.includes(
+          'BLOCKED_CAPTCHA'
+        )
       ) {
-        statusCode = 429;
+        statusCode =
+          429;
 
         customMessage =
           'IP server terdeteksi sebagai trafik otomatis atau diminta verifikasi oleh Bing.';
-      } else if (error.response) {
-        statusCode = error.response.status || 502;
+      } else if (
+        error.response
+      ) {
+        statusCode =
+          error.response.status ||
+          502;
 
         customMessage =
           `Penyedia pencarian mengembalikan status error ${statusCode}.`;
       }
 
-      return res.status(statusCode).json({
-        status: 'error',
-        message: customMessage,
-        error_detail: error.message
-      });
+      return res
+        .status(
+          statusCode
+        )
+        .json({
+          status:
+            'error',
+
+          message:
+            customMessage,
+
+          error_detail:
+            error.message
+        });
     }
   }
 );
@@ -3014,23 +3881,35 @@ app.get(
   '/api/status',
   (req, res) => {
     res.json({
-      status: 'success',
+      status:
+        'success',
 
-      uptime: process.uptime(),
+      uptime:
+        process.uptime(),
 
-      timestamp: new Date().toISOString(),
+      timestamp:
+        new Date().toISOString(),
 
-      sources: sourceStats,
+      sources:
+        sourceStats,
 
       cache: {
-        entries: cache.size,
-        maxEntries: CACHE_MAX,
-        ttlMs: CACHE_TTL
+        entries:
+          cache.size,
+
+        maxEntries:
+          CACHE_MAX,
+
+        ttlMs:
+          CACHE_TTL
       },
 
       linkCache: {
-        entries: linkCache.size,
-        maxEntries: LINK_CACHE_MAX
+        entries:
+          linkCache.size,
+
+        maxEntries:
+          LINK_CACHE_MAX
       }
     });
   }
@@ -3044,11 +3923,15 @@ app.get(
   '/',
   (req, res) => {
     res.json({
-      name: 'Search API',
-      status: 'online',
+      name:
+        'Search API',
+
+      status:
+        'online',
 
       endpoints: {
-        search: '/api/search?q=Google',
+        search:
+          '/api/search?q=Google',
 
         images:
           '/api/search?q=kucing&type=images',
@@ -3056,7 +3939,8 @@ app.get(
         news:
           '/api/search?q=teknologi&type=news',
 
-        status: '/api/status'
+        status:
+          '/api/status'
       }
     });
   }
@@ -3083,10 +3967,6 @@ app.listen(
 
     console.log(
       '[CONFIG] Parameter num, hl, gl tidak diperlukan.'
-    );
-
-    console.log(
-      '[IMAGES] Advanced nested JSON parser aktif.'
     );
   }
 );
