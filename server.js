@@ -74,28 +74,50 @@ function normalizeUrl(
     return null;
   }
 
-  let value = url.trim();
+  let value = String(url).trim();
 
   value = decodeEntities(value);
 
-  value = value
-    .replace(/\\u002f/gi, '/')
-    .replace(/\\u0026/gi, '&')
-    .replace(/\\u003d/gi, '=')
-    .replace(/\\u003f/gi, '?')
-    .replace(/\\\//g, '/')
-    .replace(/\\"/g, '"');
+  for (let i = 0; i < 3; i++) {
+    const before = value;
+
+    value = value
+      .replace(/\\u002f/gi, '/')
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\u003d/gi, '=')
+      .replace(/\\u003f/gi, '?')
+      .replace(/\\u0023/gi, '#')
+      .replace(/\\u003a/gi, ':')
+      .replace(/\\u0025/gi, '%')
+      .replace(/\\\//g, '/')
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'");
+
+    if (before === value) break;
+  }
+
+  value = value.trim();
 
   try {
     if (
-      /^https?%3A/i.test(value)
+      /^https?%3A/i.test(value) ||
+      /^https?%3a/i.test(value)
     ) {
       value = decodeURIComponent(value);
     }
   } catch (e) {}
 
   try {
-    return new URL(value, base).toString();
+    const parsed = new URL(value, base);
+
+    if (
+      parsed.protocol !== 'http:' &&
+      parsed.protocol !== 'https:'
+    ) {
+      return null;
+    }
+
+    return parsed.toString();
   } catch (e) {
     return null;
   }
@@ -111,7 +133,9 @@ function extractImageFromHtml(htmlSnippet) {
     return normalizeUrl(
       img.attr('src') ||
       img.attr('data-src') ||
-      img.attr('data-original')
+      img.attr('data-original') ||
+      img.attr('data-iurl') ||
+      img.attr('data-murl')
     );
   } catch (e) {
     return null;
@@ -867,6 +891,14 @@ function decodeEntities(s) {
       .replace(
         /&#x27;/gi,
         "'"
+      )
+      .replace(
+        /&lt;/gi,
+        '<'
+      )
+      .replace(
+        /&gt;/gi,
+        '>'
       );
 
   value =
@@ -923,6 +955,10 @@ function decodeEntities(s) {
       '?'
     )
     .replace(
+      /\\u003a/gi,
+      ':'
+    )
+    .replace(
       /\\\//g,
       '/'
     );
@@ -942,10 +978,9 @@ function normalizeMarkupForScan(
       String(value)
     );
 
-  // Decode unicode escapes berulang.
   for (
     let i = 0;
-    i < 2;
+    i < 3;
     i++
   ) {
     const next =
@@ -1054,16 +1089,70 @@ function escapeRegExp(
 }
 
 // ==========================================
+// VALIDASI IMAGE URL
+// ==========================================
+
+function isProbablyImageUrl(
+  url
+) {
+  if (!url) return false;
+
+  const normalized =
+    normalizeUrl(url);
+
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    const u =
+      new URL(normalized);
+
+    if (
+      u.protocol !== 'http:' &&
+      u.protocol !== 'https:'
+    ) {
+      return false;
+    }
+
+    const host =
+      u.hostname.toLowerCase();
+
+    const path =
+      u.pathname.toLowerCase();
+
+    if (
+      host === 'bing.com' ||
+      host.endsWith('.bing.com')
+    ) {
+      // Bing thumbnail boleh digunakan sebagai fallback.
+      // Asset branding/static tetap ditolak.
+      if (
+        path.includes('/rp/') ||
+        path.includes('/sa/simg/') ||
+        path.includes('/images/branding/')
+      ) {
+        return false;
+      }
+    }
+
+    if (
+      path.includes('favicon') ||
+      path.includes('logo.svg') ||
+      path.includes('logo.png') ||
+      path.includes('spacer.gif')
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ==========================================
 // EXTRACT FIELD DARI JSON-LIKE TEXT
-//
-// Mendukung:
-//
-// "murl":"..."
-// 'murl':'...'
-// "murl" : "..."
-// murl:"..."
-// murl = "..."
-// murl:"..."
 // ==========================================
 
 function extractLooseField(
@@ -1120,6 +1209,62 @@ function extractLooseField(
 }
 
 // ==========================================
+// GENERIC IMAGE FIELD NAMES
+// ==========================================
+
+const IMAGE_FIELDS = [
+  'murl',
+  'mediaUrl',
+  'mediaURL',
+  'imageUrl',
+  'imageURL',
+  'contentUrl',
+  'contentURL',
+  'originalUrl',
+  'originalURL',
+  'originalImageUrl',
+  'originalImage',
+  'imgurl',
+  'imgUrl',
+  'objurl',
+  'objUrl'
+];
+
+const PAGE_FIELDS = [
+  'purl',
+  'pageUrl',
+  'pageURL',
+  'sourceUrl',
+  'sourceURL',
+  'hostPageUrl',
+  'hostPageURL',
+  'page'
+];
+
+const THUMB_FIELDS = [
+  'turl',
+  'thumbnailUrl',
+  'thumbnailURL',
+  'thumbnail',
+  'thumbUrl',
+  'thumbURL',
+  'thumb'
+];
+
+const TITLE_FIELDS = [
+  't',
+  'title',
+  'name',
+  'caption',
+  'alt'
+];
+
+const DESC_FIELDS = [
+  'desc',
+  'description'
+];
+
+// ==========================================
 // PARSE LOOSE METADATA
 // ==========================================
 
@@ -1136,67 +1281,38 @@ function parseLooseMetadata(
   const murl =
     extractLooseField(
       text,
-      [
-        'murl',
-        'mediaUrl',
-        'mediaURL',
-        'imageUrl',
-        'imageURL',
-        'contentUrl',
-        'contentURL',
-        'originalUrl',
-        'originalURL'
-      ]
+      IMAGE_FIELDS
     );
 
-  if (!murl) {
+  if (
+    !murl ||
+    !isProbablyImageUrl(murl)
+  ) {
     return null;
   }
 
   const purl =
     extractLooseField(
       text,
-      [
-        'purl',
-        'pageUrl',
-        'pageURL',
-        'sourceUrl',
-        'sourceURL',
-        'hostPageUrl',
-        'hostPageURL'
-      ]
+      PAGE_FIELDS
     );
 
   const turl =
     extractLooseField(
       text,
-      [
-        'turl',
-        'thumbnailUrl',
-        'thumbnailURL',
-        'thumbnail',
-        'thumbUrl',
-        'thumbURL'
-      ]
+      THUMB_FIELDS
     );
 
   const title =
     extractLooseField(
       text,
-      [
-        't',
-        'title',
-        'name'
-      ]
+      TITLE_FIELDS
     );
 
   const desc =
     extractLooseField(
       text,
-      [
-        'desc',
-        'description'
-      ]
+      DESC_FIELDS
     );
 
   const ow =
@@ -1254,6 +1370,186 @@ function parseLooseMetadata(
     w,
     h
   };
+}
+
+// ==========================================
+// GLOBAL LOOSE IMAGE FIELD SCANNER
+//
+// Ini penting kalau Bing menghilangkan
+// struktur a.iusc tetapi URL gambar masih
+// berada di HTML/JS.
+// ==========================================
+
+function extractLooseImageEntries(
+  rawText,
+  limit = 100
+) {
+  if (
+    !rawText ||
+    limit <= 0
+  ) {
+    return [];
+  }
+
+  const text =
+    normalizeMarkupForScan(
+      rawText
+    );
+
+  const fieldPattern =
+    IMAGE_FIELDS
+      .map(escapeRegExp)
+      .join('|');
+
+  const regex =
+    new RegExp(
+      `["']?(?:${fieldPattern})["']?\\s*[:=]\\s*(?:"((?:\\\\.|[^"\\\\])*)"|'((?:\\\\.|[^'\\\\])*)'|([^,}\\]\\s]+))`,
+      'gi'
+    );
+
+  const results = [];
+  const seen =
+    new Set();
+
+  let match;
+
+  while (
+    (
+      match =
+        regex.exec(text)
+    ) &&
+    results.length <
+      limit
+  ) {
+    const rawUrl =
+      match[1] ??
+      match[2] ??
+      match[3] ??
+      '';
+
+    const imageUrl =
+      normalizeUrl(
+        decodeJsonStringValue(
+          rawUrl
+        )
+      );
+
+    if (
+      !imageUrl ||
+      !isProbablyImageUrl(
+        imageUrl
+      ) ||
+      seen.has(imageUrl)
+    ) {
+      continue;
+    }
+
+    seen.add(imageUrl);
+
+    // Ambil metadata di sekitar URL.
+    // Window sengaja cukup besar karena Bing kadang
+    // menaruh purl/title sebelum murl.
+    const start =
+      Math.max(
+        0,
+        match.index - 12000
+      );
+
+    const end =
+      Math.min(
+        text.length,
+        match.index + 16000
+      );
+
+    const windowText =
+      text.slice(
+        start,
+        end
+      );
+
+    const data = {
+      murl:
+        imageUrl,
+
+      purl:
+        extractLooseField(
+          windowText,
+          PAGE_FIELDS
+        ),
+
+      turl:
+        extractLooseField(
+          windowText,
+          THUMB_FIELDS
+        ),
+
+      t:
+        extractLooseField(
+          windowText,
+          TITLE_FIELDS
+        ),
+
+      title:
+        extractLooseField(
+          windowText,
+          TITLE_FIELDS
+        ),
+
+      desc:
+        extractLooseField(
+          windowText,
+          DESC_FIELDS
+        ),
+
+      ow:
+        extractLooseField(
+          windowText,
+          [
+            'ow',
+            'originalWidth',
+            'original_width',
+            'imageWidth'
+          ]
+        ),
+
+      oh:
+        extractLooseField(
+          windowText,
+          [
+            'oh',
+            'originalHeight',
+            'original_height',
+            'imageHeight'
+          ]
+        ),
+
+      w:
+        extractLooseField(
+          windowText,
+          [
+            'w',
+            'width'
+          ]
+        ),
+
+      h:
+        extractLooseField(
+          windowText,
+          [
+            'h',
+            'height'
+          ]
+        )
+    };
+
+    results.push({
+      data,
+      raw:
+        windowText
+    });
+  }
+
+  return results;
 }
 
 // ==========================================
@@ -1742,8 +2038,9 @@ function parseImageMetadata(raw) {
           parsed.mediaUrl ||
           parsed.imageUrl ||
           parsed.contentUrl ||
-          parsed.purl ||
-          parsed.turl
+          parsed.originalUrl ||
+          parsed.imgurl ||
+          parsed.objurl
         )
       ) {
         return parsed;
@@ -1751,7 +2048,6 @@ function parseImageMetadata(raw) {
     } catch (e) {}
   }
 
-  // JSON gagal? Coba parser JSON-like.
   const loose =
     parseLooseMetadata(
       original
@@ -1866,7 +2162,7 @@ function extractBalancedJsonObject(
 }
 
 // ==========================================
-// CARI OBJECT DENGAN MURL
+// CARI OBJECT DENGAN IMAGE FIELD
 // ==========================================
 
 function extractMurlObjects(
@@ -1909,7 +2205,10 @@ function extractMurlObjects(
       variant;
 
     const markerRegex =
-      /["']?(?:murl|mediaUrl|mediaURL|imageUrl|imageURL|contentUrl|contentURL)["']?\s*[:=]/gi;
+      new RegExp(
+        `["']?(?:${IMAGE_FIELDS.map(escapeRegExp).join('|')})["']?\\s*[:=]`,
+        'gi'
+      );
 
     let marker;
 
@@ -1926,8 +2225,6 @@ function extractMurlObjects(
       const markerIndex =
         marker.index;
 
-      // Coba beberapa kandidat {
-      // sebelum marker, bukan hanya nearest {.
       let cursor =
         markerIndex;
 
@@ -1936,7 +2233,7 @@ function extractMurlObjects(
 
       for (
         let tries = 0;
-        tries < 40;
+        tries < 50;
         tries++
       ) {
         const objectStart =
@@ -1949,7 +2246,7 @@ function extractMurlObjects(
           objectStart < 0 ||
           markerIndex -
             objectStart >
-            60000
+            80000
         ) {
           break;
         }
@@ -1972,7 +2269,10 @@ function extractMurlObjects(
               parsed.murl ||
               parsed.mediaUrl ||
               parsed.imageUrl ||
-              parsed.contentUrl
+              parsed.contentUrl ||
+              parsed.originalUrl ||
+              parsed.imgurl ||
+              parsed.objurl
             )
           ) {
             const url =
@@ -1980,11 +2280,17 @@ function extractMurlObjects(
                 parsed.murl ||
                 parsed.mediaUrl ||
                 parsed.imageUrl ||
-                parsed.contentUrl
+                parsed.contentUrl ||
+                parsed.originalUrl ||
+                parsed.imgurl ||
+                parsed.objurl
               );
 
             if (
               url &&
+              isProbablyImageUrl(
+                url
+              ) &&
               !seenUrls.has(
                 url
               )
@@ -2011,9 +2317,6 @@ function extractMurlObjects(
           objectStart - 1;
       }
 
-      // Object tidak berhasil?
-      // Ambil window sekitar marker dan parse
-      // field secara loose.
       if (
         !found &&
         results.length <
@@ -2022,13 +2325,13 @@ function extractMurlObjects(
         const windowStart =
           Math.max(
             0,
-            markerIndex - 8000
+            markerIndex - 12000
           );
 
         const windowEnd =
           Math.min(
             text.length,
-            markerIndex + 16000
+            markerIndex + 18000
           );
 
         const windowText =
@@ -2050,6 +2353,9 @@ function extractMurlObjects(
 
           if (
             url &&
+            isProbablyImageUrl(
+              url
+            ) &&
             !seenUrls.has(
               url
             )
@@ -2066,6 +2372,50 @@ function extractMurlObjects(
             });
           }
         }
+      }
+    }
+  }
+
+  // Global scanner terakhir untuk struktur yang
+  // tidak mempunyai object JSON yang rapi.
+  if (
+    results.length <
+    limit
+  ) {
+    const looseEntries =
+      extractLooseImageEntries(
+        rawHtml,
+        limit -
+          results.length
+      );
+
+    for (
+      const item
+      of looseEntries
+    ) {
+      const url =
+        normalizeUrl(
+          item.data?.murl
+        );
+
+      if (
+        !url ||
+        !isProbablyImageUrl(
+          url
+        ) ||
+        seenUrls.has(url)
+      ) {
+        continue;
+      }
+
+      seenUrls.add(url);
+      results.push(item);
+
+      if (
+        results.length >=
+        limit
+      ) {
+        break;
       }
     }
   }
@@ -2088,10 +2438,18 @@ function parseMetadataFromElement(
     'data-image',
     'data-json',
     'data-meta',
-    'data-item'
+    'data-item',
+    'data-img',
+    'data-image-data',
+    'data-image-metadata',
+    'data-img-data',
+    'data-imgurl',
+    'data-murl',
+    'data-iurl',
+    'data-objurl',
+    'data-content-url'
   ];
 
-  // Pertama atribut yang memang umum.
   for (
     const attr
     of attrs
@@ -2115,8 +2473,9 @@ function parseMetadataFromElement(
         parsed.mediaUrl ||
         parsed.imageUrl ||
         parsed.contentUrl ||
-        parsed.purl ||
-        parsed.turl
+        parsed.originalUrl ||
+        parsed.imgurl ||
+        parsed.objurl
       )
     ) {
       return {
@@ -2139,8 +2498,7 @@ function parseMetadataFromElement(
     }
   }
 
-  // Kedua: scan SEMUA atribut element.
-  // Ini penting kalau Bing mengubah nama data-*.
+  // Scan seluruh atribut.
   const rawAttrs =
     $el[0]?.attribs || {};
 
@@ -2158,10 +2516,10 @@ function parseMetadataFromElement(
     }
 
     if (
-      !/murl|image|metadata|json|media|thumbnail|content/i.test(
+      !/murl|image|metadata|json|media|thumbnail|content|imgurl|objurl|iurl/i.test(
         name
       ) &&
-      !/murl|mediaUrl|imageUrl|contentUrl|purl|turl/i.test(
+      !/murl|mediaUrl|imageUrl|contentUrl|originalUrl|imgurl|objurl/i.test(
         value
       )
     ) {
@@ -2179,7 +2537,10 @@ function parseMetadataFromElement(
         parsed.murl ||
         parsed.mediaUrl ||
         parsed.imageUrl ||
-        parsed.contentUrl
+        parsed.contentUrl ||
+        parsed.originalUrl ||
+        parsed.imgurl ||
+        parsed.objurl
       )
     ) {
       return {
@@ -2247,7 +2608,11 @@ function buildImage(
       d.mediaUrl ||
       d.imageUrl ||
       d.contentUrl ||
-      d.originalUrl
+      d.originalUrl ||
+      d.originalImageUrl ||
+      d.originalImage ||
+      d.imgurl ||
+      d.objurl
     );
 
   const thumbnailUrl =
@@ -2266,7 +2631,12 @@ function buildImage(
       d.hostPageUrl
     );
 
-  if (!imageUrl) {
+  if (
+    !imageUrl ||
+    !isProbablyImageUrl(
+      imageUrl
+    )
+  ) {
     return null;
   }
 
@@ -2274,6 +2644,8 @@ function buildImage(
     d.t ||
     d.title ||
     d.name ||
+    d.caption ||
+    d.alt ||
     d.desc ||
     query;
 
@@ -2305,6 +2677,10 @@ function buildImage(
         .replace(
           /<[^>]+>/g,
           ''
+        )
+        .replace(
+          /\s+/g,
+          ' '
         )
         .trim(),
 
@@ -2351,7 +2727,7 @@ function buildImage(
 
 // ==========================================
 // PARSER #1
-// BING CLASSIC: a.iusc / m
+// BING CLASSIC / IUSC
 // ==========================================
 
 function parseBingImageCards(
@@ -2373,7 +2749,15 @@ function parseBingImageCards(
     '[data-image]',
     '[data-json]',
     '[data-meta]',
-    '[data-item]'
+    '[data-item]',
+    '[data-img]',
+    '[data-image-data]',
+    '[data-image-metadata]',
+    '[data-img-data]',
+    '[data-murl]',
+    '[data-imgurl]',
+    '[data-iurl]',
+    '[data-objurl]'
   ];
 
   $(selectors.join(','))
@@ -2410,11 +2794,17 @@ function parseBingImageCards(
             d.murl ||
             d.mediaUrl ||
             d.imageUrl ||
-            d.contentUrl
+            d.contentUrl ||
+            d.originalUrl ||
+            d.imgurl ||
+            d.objurl
           );
 
         if (
           !imageUrl ||
+          !isProbablyImageUrl(
+            imageUrl
+          ) ||
           seen.has(
             imageUrl
           )
@@ -2449,7 +2839,7 @@ function parseBingImageCards(
 
 // ==========================================
 // PARSER #2
-// RAW HTML
+// RAW HTML / JSON-LIKE
 // ==========================================
 
 function parseMurlFallback(
@@ -2466,8 +2856,8 @@ function parseMurlFallback(
     extractMurlObjects(
       html,
       Math.max(
-        limit * 4,
-        80
+        limit * 5,
+        100
       )
     );
 
@@ -2489,15 +2879,7 @@ function parseMurlFallback(
     const d =
       item.data;
 
-    if (
-      !d ||
-      !(
-        d.murl ||
-        d.mediaUrl ||
-        d.imageUrl ||
-        d.contentUrl
-      )
-    ) {
+    if (!d) {
       continue;
     }
 
@@ -2506,11 +2888,17 @@ function parseMurlFallback(
         d.murl ||
         d.mediaUrl ||
         d.imageUrl ||
-        d.contentUrl
+        d.contentUrl ||
+        d.originalUrl ||
+        d.imgurl ||
+        d.objurl
       );
 
     if (
       !url ||
+      !isProbablyImageUrl(
+        url
+      ) ||
       seen.has(url)
     ) {
       continue;
@@ -2540,7 +2928,7 @@ function parseMurlFallback(
 
 // ==========================================
 // PARSER #3
-// SCRIPT JSON / JSON-LIKE
+// SCRIPT
 // ==========================================
 
 function parseBingScriptMetadata(
@@ -2576,7 +2964,7 @@ function parseBingScriptMetadata(
         '';
 
       if (
-        !/murl|mediaUrl|imageUrl|contentUrl/i.test(
+        !/murl|mediaUrl|imageUrl|contentUrl|originalUrl|imgurl|objurl/i.test(
           content
         )
       ) {
@@ -2587,8 +2975,8 @@ function parseBingScriptMetadata(
         extractMurlObjects(
           content,
           Math.max(
-            limit * 3,
-            60
+            limit * 4,
+            80
           )
         );
 
@@ -2615,11 +3003,17 @@ function parseBingScriptMetadata(
             d.murl ||
             d.mediaUrl ||
             d.imageUrl ||
-            d.contentUrl
+            d.contentUrl ||
+            d.originalUrl ||
+            d.imgurl ||
+            d.objurl
           );
 
         if (
           !url ||
+          !isProbablyImageUrl(
+            url
+          ) ||
           seen.has(url)
         ) {
           continue;
@@ -2673,7 +3067,9 @@ function parseLooseImageMetadata(
   const seen =
     new Set();
 
-  $('a, img, div, li, [class]')
+  $(
+    'a, img, div, li, article, figure, [class]'
+  )
     .each(
       (_, el) => {
         if (
@@ -2710,10 +3106,10 @@ function parseLooseImageMetadata(
           }
 
           if (
-            !/murl|image|metadata|json|data|media|thumbnail|content/i.test(
+            !/murl|image|metadata|json|data|media|thumbnail|content|imgurl|objurl|iurl/i.test(
               key
             ) &&
-            !/murl|mediaUrl|imageUrl|contentUrl|purl|turl/i.test(
+            !/murl|mediaUrl|imageUrl|contentUrl|originalUrl|imgurl|objurl/i.test(
               value
             )
           ) {
@@ -2745,11 +3141,17 @@ function parseLooseImageMetadata(
                 d?.murl ||
                 d?.mediaUrl ||
                 d?.imageUrl ||
-                d?.contentUrl
+                d?.contentUrl ||
+                d?.originalUrl ||
+                d?.imgurl ||
+                d?.objurl
               );
 
             if (
               !url ||
+              !isProbablyImageUrl(
+                url
+              ) ||
               seen.has(url)
             ) {
               continue;
@@ -2774,8 +3176,6 @@ function parseLooseImageMetadata(
             }
           }
 
-          // Kalau object tidak ada,
-          // coba loose parser langsung.
           if (
             images.length <
               limit
@@ -2793,6 +3193,9 @@ function parseLooseImageMetadata(
 
               if (
                 url &&
+                isProbablyImageUrl(
+                  url
+                ) &&
                 !seen.has(url)
               ) {
                 seen.add(url);
@@ -2824,11 +3227,194 @@ function parseLooseImageMetadata(
 
 // ==========================================
 // PARSER #5
-// FALLBACK DARI IMG SRC
+// DIRECT IMAGE ATTRIBUTES
 //
-// Hanya dipakai jika metadata Bing benar-benar
-// tidak ditemukan. Ini mencegah hasil 0 ketika
-// Bing mengirim tile image tanpa murl.
+// Bing bisa saja tidak memberikan JSON,
+// tetapi URL asli masih berada di data-iurl,
+// data-murl, data-original, srcset, dll.
+// ==========================================
+
+function parseDirectImageAttributes(
+  $,
+  limit,
+  offset,
+  query
+) {
+  const images = [];
+  const seen =
+    new Set();
+
+  const imageAttrs = [
+    'data-iurl',
+    'data-murl',
+    'data-image-url',
+    'data-imageurl',
+    'data-original',
+    'data-original-src',
+    'data-original-url',
+    'data-full',
+    'data-full-image',
+    'data-src',
+    'data-srcset',
+    'srcset'
+  ];
+
+  $('img, source, a, figure, div')
+    .each(
+      (_, el) => {
+        if (
+          images.length >=
+          limit
+        ) {
+          return false;
+        }
+
+        const $el =
+          $(el);
+
+        let imageUrl =
+          null;
+
+        for (
+          const attr
+          of imageAttrs
+        ) {
+          const value =
+            $el.attr(attr);
+
+          if (!value) {
+            continue;
+          }
+
+          if (
+            attr ===
+              'srcset' ||
+            attr ===
+              'data-srcset'
+          ) {
+            const first =
+              value
+                .split(',')
+                .map(
+                  x =>
+                    x
+                      .trim()
+                      .split(/\s+/)[0]
+                )
+                .find(Boolean);
+
+            imageUrl =
+              normalizeUrl(
+                first
+              );
+          } else {
+            imageUrl =
+              normalizeUrl(
+                value
+              );
+          }
+
+          if (
+            imageUrl &&
+            isProbablyImageUrl(
+              imageUrl
+            )
+          ) {
+            break;
+          }
+        }
+
+        if (
+          !imageUrl ||
+          !isProbablyImageUrl(
+            imageUrl
+          ) ||
+          seen.has(imageUrl)
+        ) {
+          return;
+        }
+
+        seen.add(
+          imageUrl
+        );
+
+        const href =
+          normalizeUrl(
+            $el.attr('href') ||
+            $el.closest('a').attr('href')
+          );
+
+        const title =
+          (
+            $el.attr('alt') ||
+            $el.attr('title') ||
+            $el
+              .find('img')
+              .first()
+              .attr('alt') ||
+            query
+          )
+            .trim();
+
+        let domain = '';
+
+        try {
+          domain =
+            new URL(
+              href ||
+              imageUrl
+            )
+              .hostname
+              .replace(
+                /^www\./,
+                ''
+              );
+        } catch (e) {}
+
+        const dims =
+          extractDimensions(
+            {},
+            $el,
+            ''
+          );
+
+        images.push({
+          title,
+          image:
+            imageUrl,
+          imageUrl:
+            imageUrl,
+          thumbnail:
+            imageUrl,
+          thumbnailUrl:
+            imageUrl,
+          width:
+            dims.width,
+          height:
+            dims.height,
+          source:
+            domain,
+          domain,
+          pageUrl:
+            href ||
+            imageUrl,
+          link:
+            href ||
+            imageUrl,
+          position:
+            offset +
+            images.length +
+            1
+        });
+      }
+    );
+
+  return images;
+}
+
+// ==========================================
+// PARSER #6
+// VISIBLE BING IMAGES
 // ==========================================
 
 function parseVisibleBingImages(
@@ -2841,7 +3427,9 @@ function parseVisibleBingImages(
   const seen =
     new Set();
 
-  $('a.iusc img, img.mimg, .imgpt img')
+  $(
+    'a.iusc img, img.mimg, .imgpt img, img'
+  )
     .each(
       (_, el) => {
         if (
@@ -2854,32 +3442,59 @@ function parseVisibleBingImages(
         const $img =
           $(el);
 
-        const src =
-          $img.attr('src') ||
-          $img.attr('data-src') ||
-          $img.attr('data-original');
+        const candidates = [
+          $img.attr(
+            'data-iurl'
+          ),
+          $img.attr(
+            'data-murl'
+          ),
+          $img.attr(
+            'data-original'
+          ),
+          $img.attr(
+            'data-full'
+          ),
+          $img.attr(
+            'data-src'
+          ),
+          $img.attr(
+            'src'
+          )
+        ];
 
-        if (!src) {
-          return;
+        let src =
+          null;
+
+        for (
+          const candidate
+          of candidates
+        ) {
+          const normalized =
+            normalizeUrl(
+              candidate
+            );
+
+          if (
+            normalized &&
+            isProbablyImageUrl(
+              normalized
+            )
+          ) {
+            src =
+              normalized;
+            break;
+          }
         }
 
-        const url =
-          normalizeUrl(
-            src
-          );
-
         if (
-          !url ||
-          /^data:image\//i.test(
-            url
-          ) ||
-          /^blob:/i.test(url) ||
-          seen.has(url)
+          !src ||
+          seen.has(src)
         ) {
           return;
         }
 
-        seen.add(url);
+        seen.add(src);
 
         const $parent =
           $img.closest(
@@ -2901,6 +3516,9 @@ function parseVisibleBingImages(
             $img.attr(
               'title'
             ) ||
+            $parent.attr(
+              'aria-label'
+            ) ||
             query
           )
             .trim();
@@ -2910,7 +3528,8 @@ function parseVisibleBingImages(
         try {
           domain =
             new URL(
-              href || url
+              href ||
+              src
             )
               .hostname
               .replace(
@@ -2931,13 +3550,13 @@ function parseVisibleBingImages(
         images.push({
           title,
           image:
-            url,
+            src,
           imageUrl:
-            url,
+            src,
           thumbnail:
-            url,
+            src,
           thumbnailUrl:
-            url,
+            src,
           width:
             dims.width,
           height:
@@ -2946,9 +3565,11 @@ function parseVisibleBingImages(
             domain,
           domain,
           pageUrl:
-            href || url,
+            href ||
+            src,
           link:
-            href || url,
+            href ||
+            src,
           position:
             offset +
             images.length +
@@ -3005,17 +3626,26 @@ function parseAllBingImages(
 
       if (
         !url ||
+        !isProbablyImageUrl(
+          url
+        ) ||
         seen.has(url)
       ) {
         continue;
       }
 
       seen.add(url);
+
+      item.position =
+        offset +
+        all.length +
+        1;
+
       all.push(item);
     }
   }
 
-  // 1. Bing card / iusc
+  // 1. Struktur Bing klasik.
   append(
     parseBingImageCards(
       $,
@@ -3026,69 +3656,80 @@ function parseAllBingImages(
     )
   );
 
+  // 2. Object JSON / JSON-like.
   if (
-    all.length >= limit
+    all.length < limit
   ) {
-    return all;
+    append(
+      parseMurlFallback(
+        html,
+        limit -
+          all.length,
+        offset,
+        query
+      )
+    );
   }
 
-  // 2. Raw HTML murl
-  append(
-    parseMurlFallback(
-      html,
-      limit,
-      offset,
-      query
-    )
-  );
-
+  // 3. Script state.
   if (
-    all.length >= limit
+    all.length < limit
   ) {
-    return all;
+    append(
+      parseBingScriptMetadata(
+        html,
+        limit -
+          all.length,
+        offset,
+        query
+      )
+    );
   }
 
-  // 3. Script
-  append(
-    parseBingScriptMetadata(
-      html,
-      limit,
-      offset,
-      query
-    )
-  );
-
+  // 4. Loose data attributes.
   if (
-    all.length >= limit
+    all.length < limit
   ) {
-    return all;
+    append(
+      parseLooseImageMetadata(
+        html,
+        limit -
+          all.length,
+        offset,
+        query
+      )
+    );
   }
 
-  // 4. Loose attributes
-  append(
-    parseLooseImageMetadata(
-      html,
-      limit,
-      offset,
-      query
-    )
-  );
-
+  // 5. Direct data-iurl/data-original/srcset.
   if (
-    all.length >= limit
+    all.length < limit
   ) {
-    return all;
+    append(
+      parseDirectImageAttributes(
+        $,
+        limit -
+          all.length,
+        offset,
+        query
+      )
+    );
   }
 
-  // 5. Visible img fallback
-  append(
-    parseVisibleBingImages(
-      $,
-      limit,
-      offset,
-      query
-    )
-  );
+  // 6. img src terakhir.
+  if (
+    all.length < limit
+  ) {
+    append(
+      parseVisibleBingImages(
+        $,
+        limit -
+          all.length,
+        offset,
+        query
+      )
+    );
+  }
 
   return all;
 }
@@ -3416,7 +4057,7 @@ async function runImageAttempt(
     const imageUrlCount =
       (
         html.match(
-          /["']?(?:imageUrl|mediaUrl|contentUrl)["']?\s*[:=]/gi
+          /["']?(?:imageUrl|mediaUrl|contentUrl|originalUrl|imgurl|objurl)["']?\s*[:=]/gi
         ) || []
       ).length;
 
@@ -3427,6 +4068,19 @@ async function runImageAttempt(
         ) || []
       ).length;
 
+    const dataIurlCount =
+      (
+        html.match(
+          /\bdata-iurl\s*=/gi
+        ) || []
+      ).length;
+
+    const imgCount =
+      $('img').length;
+
+    const scriptCount =
+      $('script').length;
+
     console.log(
       `[IMG-DEBUG] ${attempt.name} ` +
       `status=${res.status} ` +
@@ -3436,8 +4090,11 @@ async function runImageAttempt(
       `murl=${murlCount} ` +
       `turl=${turlCount} ` +
       `purl=${purlCount} ` +
-      `imageUrl=${imageUrlCount} ` +
+      `imageFields=${imageUrlCount} ` +
       `data-m=${dataMCount} ` +
+      `data-iurl=${dataIurlCount} ` +
+      `img=${imgCount} ` +
+      `script=${scriptCount} ` +
       `challenge=${blocked} ` +
       `proxy=${!!proxy} ` +
       `body="${bodyText}"`
