@@ -4472,10 +4472,12 @@ async function fetchNewsViaBing(
             .join(' · ');
 
         const publisher =
-          sourceSpans
-            .first()
-            .text()
-            .trim();
+  sourceSpans &&
+  sourceSpans.length
+    ? $(sourceSpans[0])
+        .text()
+        .trim()
+    : '';
 
         const img =
           $el
